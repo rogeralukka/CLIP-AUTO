@@ -1,0 +1,20 @@
+{
+  "name": "cyber_cyan",
+  "description": "Vibrant cyan fill highlight suited for tech, GTA, and futuristic aesthetics",
+  "font_name": "Arial Black",
+  "font_size": 88,
+  "primary_colour": "&H00FFFF00",
+  "secondary_colour": "&H00FFFFFF",
+  "outline_colour": "&H00141414",
+  "back_colour": "&H96000000",
+  "bold": -1,
+  "italic": 0,
+  "outline": 6,
+  "shadow": 2,
+  "alignment": 2,
+  "margin_l": 60,
+  "margin_r": 60,
+  "margin_v": 520,
+  "max_words_per_line": 5,
+  "gap_break_seconds": 0.6
+}

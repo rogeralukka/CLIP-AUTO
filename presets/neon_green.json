@@ -1,0 +1,20 @@
+{
+  "name": "neon_green",
+  "description": "High-visibility vibrant neon green karaoke fill for intense hype gaming moments",
+  "font_name": "Arial Black",
+  "font_size": 90,
+  "primary_colour": "&H0000FF00",
+  "secondary_colour": "&H00FFFFFF",
+  "outline_colour": "&H00000000",
+  "back_colour": "&HB4000000",
+  "bold": -1,
+  "italic": 0,
+  "outline": 7,
+  "shadow": 3,
+  "alignment": 2,
+  "margin_l": 60,
+  "margin_r": 60,
+  "margin_v": 520,
+  "max_words_per_line": 4,
+  "gap_break_seconds": 0.5
+}

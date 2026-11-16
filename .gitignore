@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments & IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# External binaries (downloaded automatically by setup_windows.ps1)
+bin/*
+!bin/.gitkeep
+
+# Application runtime data, local logs, and cache
+*.log
+clipper.log
+jobs.json*
+user_prefs.json
+logs/*
+!logs/.gitkeep
+
+# Video downloads, rendered clips, and export outputs
+downloads/*
+!downloads/.gitkeep
+clips/*
+!clips/.gitkeep
+exports/*
+!exports/.gitkeep
+
+# Test artifacts
+tests/audio_clips/
+tests/test_clips/
+tests/test_scratch/
+tests/__pycache__/
