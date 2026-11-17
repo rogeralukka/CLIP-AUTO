@@ -159,6 +159,18 @@ def detect_pipeline_moments(
         top=top,
         safety_max=safety_max,
         job_id=job_id,
+        full_transcript_data=full_transcript_data,
+        vod_id=vod_id,
+    )
+    check_cancelled_or_paused(job_id)
+
+    # 5. Phase 3: Optional Local LLM Judge Re-ranking
+    from .judge import rank_moments_with_llm
+    moments = rank_moments_with_llm(
+        moments=moments,
+        top_n=top,
+        full_transcript_data=full_transcript_data,
+        comments=comments,
     )
     check_cancelled_or_paused(job_id)
 
