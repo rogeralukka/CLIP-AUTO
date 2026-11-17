@@ -291,12 +291,18 @@ def delete_job(job_id: str):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def confirm_render_moments(job_id: str, selected_indices: List[int]):
-    """Set selected moment indices and transition job to QUEUED for rendering."""
+def confirm_render_moments(
+    job_id: str,
+    selected_indices: List[int],
+    updated_moments: Optional[List[Dict[str, Any]]] = None,
+):
+    """Set selected moment indices, save any updated hook titles/metadata, and transition job to QUEUED for rendering."""
     register_job(job_id)
     resume_job_event(job_id)
 
     def _confirm(job):
+        if updated_moments is not None:
+            job["detected_moments"] = updated_moments
         job["selected_indices"] = selected_indices
         job["stages"]["selection"] = "DONE"
         job["stages"]["transcribe"] = "WAITING"

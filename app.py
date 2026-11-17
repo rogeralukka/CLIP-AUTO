@@ -24,8 +24,10 @@ from clipper.campaigns import (
     load_campaign,
     save_campaign,
 )
+from clipper.cutter import render_vertical_clip
 from clipper.downloader import get_available_qualities
 from clipper.process_manager import get_job_logs
+from clipper.qc import generate_platform_metadata, perform_qc_check
 from clipper.queue import (
     add_job,
     cancel_all,
@@ -194,12 +196,17 @@ tab_new, tab_campaigns, tab_queue, tab_gallery = st.tabs([
 # TAB 1: NEW JOB (SIMPLE, STRICT ORDER)
 # ==========================================
 with tab_new:
-    # 1. VOD link or file path
-    vod_input = st.text_input(
-        "VOD link or file path",
-        placeholder="https://www.twitch.tv/videos/... or https://youtube.com/watch?v=...",
+    # 1. VOD link or file path (supports multiple links, one per line)
+    vod_input = st.text_area(
+        "VOD link or file path (paste multiple links, one per line)",
+        placeholder="https://www.twitch.tv/videos/...\nhttps://youtube.com/watch?v=...",
+        height=85,
         key="clean_vod_input",
     )
+
+    raw_lines = [l.strip() for l in vod_input.strip().splitlines() if l.strip()]
+    if len(raw_lines) > 1:
+        st.info(f"{len(raw_lines)} links detected. Each link will be queued as an individual job.")
 
     # 2. Campaign dropdown
     campaigns = list_campaigns("campaigns")
@@ -218,7 +225,8 @@ with tab_new:
     )
 
     # 3. Quality (appears ONLY after link is checked)
-    clean_url = vod_input.strip()
+    first_url = raw_lines[0] if raw_lines else ""
+    clean_url = first_url
     selected_quality = "1080p"
     quality_ready = True
 
@@ -362,8 +370,30 @@ with tab_new:
     else:
         # 4. Big "Start" button
         if st.button("Start", type="primary", use_container_width=True):
-            if not clean_url:
+            if not raw_lines:
                 st.error("Please enter a VOD link or file path.")
+            elif len(raw_lines) > 1:
+                camp_arg = None if selected_camp_id == "none" else selected_camp_id
+                save_user_prefs({"last_quality": selected_quality})
+                queued_ids = []
+                for url_item in raw_lines:
+                    jid = add_job(
+                        vod_input=url_item,
+                        campaign_id=camp_arg,
+                        chat_input=chat_file.strip() if chat_file.strip() else None,
+                        quality=selected_quality,
+                        mode="AUTO" if clip_mode == "Auto" else "MANUAL",
+                        top=manual_clips,
+                        safety_max=safety_max,
+                        z_thresh=z_thresh,
+                        preset=caption_preset,
+                        use_cpu=force_cpu,
+                        auto_render=not review_before_render,
+                    )
+                    queued_ids.append(jid)
+                st.success(f"Queued {len(queued_ids)} jobs: {', '.join(f'#{j}' for j in queued_ids)}")
+                time.sleep(0.5)
+                st.rerun()
             else:
                 camp_arg = None if selected_camp_id == "none" else selected_camp_id
                 existing_jid = check_duplicate_job(clean_url, camp_arg)
@@ -722,7 +752,7 @@ with tab_queue:
                 # Review-before-render moment list
                 if status == "AWAITING_SELECTION":
                     moments = job.get("detected_moments", [])
-                    st.markdown(f"**Found {len(moments)} hype moments. Select moments to render:**")
+                    st.markdown(f"**Found {len(moments)} hype moments. Review and select moments to render:**")
 
                     selected_indices = []
                     for m_idx, m in enumerate(moments):
@@ -731,6 +761,25 @@ with tab_queue:
                         m_dur = m_end - m_start
                         m_score = m.get("score", 0.0)
                         m_preview = m.get("preview", "")
+
+                        # Format timestamp H:MM:SS
+                        ts_start = f"{int(m_start//3600):02d}:{int((m_start%3600)//60):02d}:{int(m_start%60):02d}"
+                        ts_end = f"{int(m_end//3600):02d}:{int((m_end%3600)//60):02d}:{int(m_end%60):02d}"
+
+                        # Score breakdown
+                        score_details = [f"Score: **{m_score:.2f}**"]
+                        bd = m.get("breakdown", {})
+                        if bd:
+                            if "chat_rate" in bd:
+                                score_details.append(f"Chat: +{bd['chat_rate']:.2f}")
+                            if "chat_keywords" in bd:
+                                score_details.append(f"Keywords: +{bd['chat_keywords']:.2f}")
+                            if "streamer_loudness" in bd:
+                                score_details.append(f"Loudness: +{bd['streamer_loudness']:.2f}")
+                        if m.get("llm_score"):
+                            score_details.append(f"LLM Judge: {m['llm_score']:.1f}/10")
+
+                        breakdown_str = " | ".join(score_details)
 
                         col_chk, col_info = st.columns([1, 11])
                         with col_chk:
@@ -742,16 +791,33 @@ with tab_queue:
                             if is_checked:
                                 selected_indices.append(m_idx)
                         with col_info:
-                            st.caption(
-                                f"Moment #{m_idx+1}: {int(m_start//60)}:{int(m_start%60):02d} - "
-                                f"{int(m_end//60)}:{int(m_end%60):02d} ({m_dur}s) | Score: {m_score:.2f} | {m_preview}"
+                            st.markdown(
+                                f"**Moment #{m_idx+1}:** `{ts_start} - {ts_end}` ({int(m_dur)}s) | {breakdown_str}",
+                                unsafe_allow_html=True,
                             )
+                            # Editable hook title
+                            cur_hook = m.get("hook_title") or (m_preview[:45] if m_preview else "")
+                            new_hook = st.text_input(
+                                "Hook Title",
+                                value=cur_hook,
+                                key=f"hook_{jid}_{m_idx}",
+                                label_visibility="collapsed",
+                            )
+                            m["hook_title"] = new_hook
 
-                    if st.button("Render selected", key=f"btn_render_{jid}", type="primary"):
+                            # LLM Judge reason if present
+                            judge_reason = m.get("reason") or m.get("llm_reason")
+                            if judge_reason:
+                                st.caption(f"💡 *Judge Note:* {judge_reason}")
+                            elif m_preview:
+                                st.caption(f"Transcript: *\"{m_preview}\"*")
+
+                    render_btn_label = f"Render Selected ({len(selected_indices)} clips)"
+                    if st.button(render_btn_label, key=f"btn_render_{jid}", type="primary"):
                         if not selected_indices:
                             st.error("Please select at least one moment.")
                         else:
-                            confirm_render_moments(jid, selected_indices)
+                            confirm_render_moments(jid, selected_indices, updated_moments=moments)
                             st.rerun()
 
                 elif status == "COMPLETED":
@@ -824,17 +890,31 @@ with tab_gallery:
                 with cols[c_idx]:
                     st.markdown(f"**Clip #{clip.get('index', global_idx+1)}: {clip.get('filename')}**")
 
-                    # Badges
-                    badge_str = f"Score: {clip.get('hype_score', 0):.2f}"
-                    if clip.get("is_flagged"):
-                        flagged_words = ", ".join(clip.get("flagged_words", []))
+                    # QC Badges and Layout info
+                    qc = clip.get("qc", {})
+                    if qc:
+                        qc_st = qc.get("status", "PASS")
+                        lufs_val = qc.get("measured_lufs", -14.0)
+                        flags = qc.get("flags", [])
+                        flag_tooltip = " | ".join(flags) if flags else "All checks passed"
+
+                        badge_map = {
+                            "PASS": "<span class='badge-clean' title='All checks passed'>QC: PASS</span>",
+                            "WARN": f"<span class='badge-paused' title='{flag_tooltip}'>QC: WARN</span>",
+                            "FAIL": f"<span class='badge-flagged' title='{flag_tooltip}'>QC: FAIL</span>",
+                        }
+                        qc_badge = badge_map.get(qc_st, "<span class='badge-clean'>QC: PASS</span>")
+
                         st.markdown(
-                            f"<span class='badge-flagged'>Flagged: {flagged_words}</span> | {badge_str} | Status: **{clip.get('status', 'PENDING')}**",
+                            f"{qc_badge} | **{lufs_val:.1f} LUFS** | Layout: **{clip.get('layout', 'gameplay')}** | Status: **{clip.get('status', 'PENDING')}**",
                             unsafe_allow_html=True,
                         )
+                        if flags:
+                            for flg in flags:
+                                st.caption(f"⚠️ *{flg}*")
                     else:
                         st.markdown(
-                            f"<span class='badge-clean'>Clean</span> | {badge_str} | Status: **{clip.get('status', 'PENDING')}**",
+                            f"Score: **{clip.get('hype_score', 0):.2f}** | Status: **{clip.get('status', 'PENDING')}**",
                             unsafe_allow_html=True,
                         )
 
@@ -843,22 +923,92 @@ with tab_gallery:
                     if clip_path and os.path.isfile(clip_path):
                         st.video(clip_path)
 
-                    # Title
-                    new_title = st.text_input(
-                        "Title",
-                        value=clip.get("suggested_title", ""),
-                        key=f"g_title_{selected_job_id}_{global_idx}",
+                    # Hook Title (editable)
+                    cur_hook = clip.get("hook_title") or clip.get("suggested_title", "")
+                    new_hook = st.text_input(
+                        "Hook Title",
+                        value=cur_hook,
+                        key=f"g_hook_{selected_job_id}_{global_idx}",
                     )
-                    clip["suggested_title"] = new_title
+                    if new_hook != cur_hook:
+                        clip["hook_title"] = new_hook
+                        clip["suggested_title"] = new_hook
+                        clip["platforms"] = generate_platform_metadata(
+                            hook_title=new_hook,
+                            transcript=clip.get("transcript", ""),
+                            campaign=campaign_info,
+                        )
+                        jobs[selected_job_id]["clips"] = clips
+                        save_jobs(jobs)
 
-                    # Description
-                    new_desc = st.text_area(
-                        "Description and hashtags",
-                        value=clip.get("suggested_description", ""),
-                        height=100,
-                        key=f"g_desc_{selected_job_id}_{global_idx}",
-                    )
-                    clip["suggested_description"] = new_desc
+                    # Layout Selector & Re-render button
+                    col_lay, col_re = st.columns([2, 1.2])
+                    cur_lay = (clip.get("layout") or "gameplay").capitalize()
+                    layout_opts = ["Gameplay", "Split", "Face"]
+                    lay_idx = layout_opts.index(cur_lay) if cur_lay in layout_opts else 0
+
+                    with col_lay:
+                        chosen_lay = st.selectbox(
+                            "Layout",
+                            layout_opts,
+                            index=lay_idx,
+                            key=f"g_lay_{selected_job_id}_{global_idx}",
+                        )
+                    with col_re:
+                        st.write("")
+                        if st.button("Re-render", key=f"g_re_{selected_job_id}_{global_idx}", use_container_width=True):
+                            clip_dir = os.path.dirname(clip["path"])
+                            clip_idx = clip.get("index", global_idx + 1)
+                            r_path = os.path.join(clip_dir, f"rough_{clip_idx:02d}.mp4")
+                            a_path = os.path.join(clip_dir, f"cap_{clip_idx:02d}.ass")
+                            if os.path.isfile(r_path):
+                                with st.spinner(f"Re-rendering with {chosen_lay} layout..."):
+                                    render_vertical_clip(
+                                        r_path,
+                                        a_path if os.path.isfile(a_path) else None,
+                                        clip["path"],
+                                        layout=chosen_lay.lower(),
+                                        facecam_info=clip.get("facecam"),
+                                        use_cpu=False,
+                                    )
+                                    clip["layout"] = chosen_lay.lower()
+                                    clip["qc"] = perform_qc_check(
+                                        clip["path"],
+                                        duration=clip.get("duration", 30.0),
+                                        campaign=campaign_info,
+                                        facecam_info=clip.get("facecam"),
+                                        word_count=clip.get("word_count", 0),
+                                        layout=chosen_lay.lower(),
+                                    )
+                                    jobs[selected_job_id]["clips"] = clips
+                                    save_jobs(jobs)
+                                    st.success(f"Clip re-rendered as {chosen_lay}!")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                            else:
+                                st.error("Source rough clip file not found for re-rendering.")
+
+                    # Platform Captions with one-click copy blocks
+                    platforms = clip.get("platforms")
+                    if not platforms:
+                        platforms = generate_platform_metadata(
+                            hook_title=clip.get("hook_title") or clip.get("suggested_title", ""),
+                            transcript=clip.get("transcript", ""),
+                            campaign=campaign_info,
+                        )
+
+                    with st.expander("Platform Captions (One-Click Copy)", expanded=False):
+                        p_col1, p_col2 = st.columns(2)
+                        with p_col1:
+                            st.markdown("**YouTube Shorts:**")
+                            st.code(f"{platforms.get('youtube_title', '')}\n\n{platforms.get('youtube_description', '')}", language="text")
+                            st.markdown("**TikTok:**")
+                            st.code(platforms.get("tiktok_caption", ""), language="text")
+                        with p_col2:
+                            st.markdown("**Instagram Reels:**")
+                            st.code(platforms.get("reels_caption", ""), language="text")
+                            st.markdown("**X (Twitter):**")
+                            st.code(platforms.get("x_tweet", ""), language="text")
 
                     # Action buttons in a row
                     b1, b2, b3 = st.columns(3)
