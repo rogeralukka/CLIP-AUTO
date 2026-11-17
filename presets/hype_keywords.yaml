@@ -1,0 +1,48 @@
+# presets/hype_keywords.yaml - Hype keywords and weighted chat patterns
+# Editable dictionary of keywords, emotes, and regex patterns with importance weights.
+
+keywords:
+  "clip it": 3.0
+  "clip that": 3.0
+  "clip": 2.0
+  "lmao": 2.0
+  "lmfao": 2.5
+  "kekw": 2.5
+  "omegalul": 2.5
+  "lul": 1.5
+  "lol": 1.0
+  "w": 1.5
+  "l": 1.2
+  "no way": 2.5
+  "bro": 1.2
+  "omg": 2.0
+  "holy shit": 2.5
+  "what the fuck": 2.5
+  "wtf": 2.0
+  "clutch": 2.5
+  "ace": 2.5
+  "insane": 2.0
+  "gg": 1.5
+  "pog": 2.5
+  "poggers": 2.5
+  "sheesh": 2.0
+  "bruh": 1.5
+  "dead": 1.5
+  "skull": 1.5
+
+patterns:
+  # Wall of question marks or exclamation marks (e.g. "???", "!!!", "?!?!")
+  question_wall:
+    regex: "\\?{3,}"
+    weight: 2.0
+  exclamation_wall:
+    regex: "!{3,}"
+    weight: 2.0
+  # ALL-CAPS message with at least 5 letters
+  all_caps:
+    min_length: 5
+    weight: 1.5
+  # Emote spam (same word repeated 3+ times in one message)
+  repeated_words:
+    min_repetitions: 3
+    weight: 2.0
