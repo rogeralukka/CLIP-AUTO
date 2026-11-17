@@ -283,6 +283,36 @@ def check_twitch_downloader(verbose=False):
         )
 
 
+def check_facecam(verbose=False):
+    """Test 7: Verify OpenCV and MediaPipe face detection runtime and models."""
+    try:
+        import cv2
+        import numpy as np
+
+        details = [f"OpenCV: {cv2.__version__}"]
+
+        try:
+            import mediapipe as mp
+            details.append(f"MediaPipe: {getattr(mp, '__version__', 'available')}")
+        except ImportError:
+            details.append("MediaPipe: Not installed (optional, OpenCV Haar used as fallback)")
+
+        from clipper.facecam import get_face_detector
+        detector = get_face_detector()
+        details.append(f"Active Facecam Backend: {detector.backend}")
+
+        # Test on dummy black frame
+        test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        boxes = detector.detect_faces(test_frame)
+        details.append("Face detection inference test: PASS")
+
+        return True, "\n".join(details), ""
+    except Exception as e:
+        return False, f"Facecam detection check failed: {e}", (
+            "Run 'pip install opencv-python mediapipe' and ensure models/ folder contains face models."
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Stream Clipper Diagnostic & Verification Suite (Phase 0)",
@@ -302,28 +332,28 @@ def main():
     all_passed = True
 
     # 1. FFmpeg
-    print(f"\n{BOLD}[1/6] Testing FFmpeg in PATH...{RESET}")
+    print(f"\n{BOLD}[1/7] Testing FFmpeg in PATH...{RESET}")
     ok, detail, fix = check_ffmpeg(args.verbose)
     print_result("FFmpeg (in PATH & libass enabled)", ok, detail, fix)
     if not ok:
         all_passed = False
 
     # 2. NVENC
-    print(f"\n{BOLD}[2/6] Testing NVENC Hardware Encoder (2-second encode)...{RESET}")
+    print(f"\n{BOLD}[2/7] Testing NVENC Hardware Encoder (2-second encode)...{RESET}")
     ok, detail, fix = check_nvenc(args.verbose)
     print_result("NVENC Encoder (h264_nvenc 1080p)", ok, detail, fix)
     if not ok:
         all_passed = False
 
     # 3. CUDA Visibility
-    print(f"\n{BOLD}[3/6] Testing CUDA & NVIDIA Runtime Visibility...{RESET}")
+    print(f"\n{BOLD}[3/7] Testing CUDA & NVIDIA Runtime Visibility...{RESET}")
     ok, detail, fix = check_cuda(args.verbose)
     print_result("NVIDIA CUDA & cuBLAS/cuDNN DLLs", ok, detail, fix)
     if not ok:
         all_passed = False
 
     # 4. faster-whisper large-v3
-    print(f"\n{BOLD}[4/6] Testing faster-whisper (large-v3 transcription)...{RESET}")
+    print(f"\n{BOLD}[4/7] Testing faster-whisper (large-v3 transcription)...{RESET}")
     if getattr(args, "skip_whisper", False):
         print_result("faster-whisper large-v3", True, "Skipped by --skip-whisper flag")
     else:
@@ -333,23 +363,30 @@ def main():
             all_passed = False
 
     # 5. yt-dlp
-    print(f"\n{BOLD}[5/6] Testing yt-dlp CLI...{RESET}")
+    print(f"\n{BOLD}[5/7] Testing yt-dlp CLI...{RESET}")
     ok, detail, fix = check_ytdlp(args.verbose)
     print_result("yt-dlp CLI", ok, detail, fix)
     if not ok:
         all_passed = False
 
     # 6. TwitchDownloaderCLI
-    print(f"\n{BOLD}[6/6] Testing TwitchDownloaderCLI...{RESET}")
+    print(f"\n{BOLD}[6/7] Testing TwitchDownloaderCLI...{RESET}")
     ok, detail, fix = check_twitch_downloader(args.verbose)
     print_result("TwitchDownloaderCLI", ok, detail, fix)
+    if not ok:
+        all_passed = False
+
+    # 7. Facecam & OpenCV/MediaPipe
+    print(f"\n{BOLD}[7/7] Testing Facecam & OpenCV/MediaPipe Runtime...{RESET}")
+    ok, detail, fix = check_facecam(args.verbose)
+    print_result("Facecam Detection Runtime", ok, detail, fix)
     if not ok:
         all_passed = False
 
     # Summary
     print_header("VERIFICATION SUMMARY")
     if all_passed:
-        print(f" {GREEN}{BOLD}ALL TESTS PASSED! Your machine is 100% ready for Phase 1.{RESET}")
+        print(f" {GREEN}{BOLD}ALL TESTS PASSED! Your machine is 100% ready.{RESET}")
         print(f" Hardware: RTX 5070 Ti (12GB VRAM) ready with NVENC + large-v3 CUDA.")
         sys.exit(0)
     else:

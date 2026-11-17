@@ -1,9 +1,10 @@
 """Video cutting and vertical 9:16 rendering with tracked processes and NVENC."""
 import logging
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .captions import escape_ffmpeg_ass_path
+from .facecam import compute_gameplay_crop, detect_facecam
 from .process_manager import check_cancelled_or_paused, run_tracked_command
 from .utils import get_ffmpeg_path
 
@@ -68,8 +69,17 @@ def render_vertical_clip(
     overlay: Optional[dict] = None,
     use_cpu: bool = False,
     job_id: Optional[str] = None,
+    layout: str = "auto",
+    facecam_info: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Render 1080x1920 vertical video with burned-in karaoke captions and optional campaign overlay."""
+    """Render 1080x1920 vertical video with facecam-aware layout, burned karaoke captions, and overlay.
+
+    Layout options:
+    - 'auto': Automatically select 'split' if facecam is found, else 'gameplay'
+    - 'split': Facecam at top (1080x640), gameplay at bottom (1080x1280)
+    - 'gameplay': 16:9 gameplay fit in center with blurred, darkened background fill
+    - 'face': Reaction crop centered on streamer facecam scaled to full 9:16
+    """
     check_cancelled_or_paused(job_id)
     ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
     abs_rough = os.path.abspath(rough_clip_path)
@@ -79,62 +89,114 @@ def render_vertical_clip(
     cwd_dir = os.path.dirname(abs_rough)
     encoder_flags = get_video_encoder_flags(use_cpu)
 
-    base_filters = ["crop=ih*9/16:ih", "scale=1080:1920", "setsar=1"]
+    # Determine layout and facecam box
+    active_layout = (layout or "auto").lower()
+    if active_layout == "auto":
+        if facecam_info is None:
+            facecam_info = detect_facecam(abs_rough)
+        active_layout = "split" if facecam_info.get("found", False) else "gameplay"
+    elif active_layout in ("split", "face") and facecam_info is None:
+        facecam_info = detect_facecam(abs_rough)
 
+    frame_size = facecam_info.get("frame_size", (1920, 1080)) if facecam_info else (1920, 1080)
+    src_w, src_h = frame_size
+
+    # Build base video filter complex according to layout
+    filter_parts: List[str] = []
+
+    if active_layout == "split":
+        padded_box = facecam_info.get("padded_box") if facecam_info else None
+        corner = facecam_info.get("corner", "top_right") if facecam_info else "top_right"
+
+        if padded_box:
+            fx, fy, fw, fh = padded_box
+        else:
+            # Sane default top-right corner
+            fw, fh = int(src_w * 0.28), int(src_h * 0.35)
+            fx, fy = max(0, src_w - fw), 0
+
+        gx, gy, gw, gh = compute_gameplay_crop(src_w, src_h, corner)
+
+        filter_parts.append(
+            f"[0:v] crop={fw}:{fh}:{fx}:{fy},scale=1080:640:force_original_aspect_ratio=increase,crop=1080:640,setsar=1 [top_face]; "
+            f"[0:v] crop={gw}:{gh}:{gx}:{gy},scale=1080:1280:force_original_aspect_ratio=increase,crop=1080:1280,setsar=1 [bot_game]; "
+            f"[top_face][bot_game] vstack=inputs=2 [v_base]"
+        )
+    elif active_layout == "face":
+        face_box = facecam_info.get("face_box") if facecam_info else None
+        if face_box:
+            fx, fy, fw, fh = face_box
+            cx = fx + fw // 2
+            cy = fy + fh // 2
+        else:
+            cx, cy = src_w // 2, src_h // 2
+
+        crop_h = src_h
+        crop_w = int(crop_h * 9 / 16)
+        if crop_w > src_w:
+            crop_w = src_w
+            crop_h = int(crop_w * 16 / 9)
+        crop_x = max(0, min(src_w - crop_w, cx - crop_w // 2))
+        crop_y = max(0, min(src_h - crop_h, cy - crop_h // 2))
+
+        filter_parts.append(
+            f"[0:v] crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920,setsar=1 [v_base]"
+        )
+    else:
+        # Default 'gameplay': 16:9 gameplay fit in center with blurred background
+        filter_parts.append(
+            "[0:v] split [main_fg][main_bg]; "
+            "[main_bg] scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5,eq=brightness=-0.15 [bg_blur]; "
+            "[main_fg] scale=1080:608:force_original_aspect_ratio=decrease,setsar=1 [fg_game]; "
+            "[bg_blur][fg_game] overlay=(W-w)/2:(H-h)/2 [v_base]"
+        )
+
+    curr_v = "[v_base]"
+
+    # Burn in ASS captions if present
     if ass_path and os.path.isfile(ass_path):
         abs_ass = os.path.abspath(ass_path)
         if os.path.dirname(abs_ass) == cwd_dir:
             rel_ass = os.path.basename(abs_ass)
-            base_filters.append(f"ass={rel_ass}")
+            ass_filter = f"ass={rel_ass}"
         else:
             escaped = escape_ffmpeg_ass_path(abs_ass)
-            base_filters.append(f"ass='{escaped}'")
+            ass_filter = f"ass='{escaped}'"
+        filter_parts.append(f"{curr_v} {ass_filter} [v_sub]")
+        curr_v = "[v_sub]"
 
+    # Burn in overlay image if present
     overlay_img = overlay.get("image_path") if overlay else None
     has_overlay = overlay_img and os.path.isfile(overlay_img)
 
+    inputs = ["-i", abs_rough]
     if has_overlay:
         abs_overlay = os.path.abspath(overlay_img)
+        inputs.extend(["-i", abs_overlay])
         ox = str(overlay.get("x", "(W-w)/2"))
         oy = str(overlay.get("y", "120"))
         ow = str(overlay.get("width", -1))
         oh = str(overlay.get("height", -1))
-
-        v0_chain = ",".join(base_filters)
         over_scale = f"scale={ow}:{oh}" if (ow != "-1" or oh != "-1") else "null"
-        filter_complex = (
-            f"[0:v]{v0_chain}[v_sub];"
-            f"[1:v]{over_scale}[v_over];"
-            f"[v_sub][v_over]overlay={ox}:{oy}[outv]"
-        )
+        filter_parts.append(f"[1:v] {over_scale} [v_over]; {curr_v}[v_over] overlay={ox}:{oy} [outv]")
+        curr_v = "[outv]"
 
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", abs_rough,
-            "-i", abs_overlay,
-            "-filter_complex", filter_complex,
-            "-map", "[outv]",
-            "-map", "0:a",
-            "-pix_fmt", "yuv420p",
-            *encoder_flags,
-            "-c:a", "aac",
-            "-b:a", "160k",
-            abs_out
-        ]
-    else:
-        vf_string = ",".join(base_filters)
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", abs_rough,
-            "-vf", vf_string,
-            "-pix_fmt", "yuv420p",
-            *encoder_flags,
-            "-c:a", "aac",
-            "-b:a", "160k",
-            abs_out
-        ]
+    full_filter_complex = "; ".join(filter_parts)
 
-    logger.info(f"Rendering 9:16 vertical clip with burned captions -> {output_path}")
+    cmd = [
+        ffmpeg_bin, "-y",
+        *inputs,
+        "-filter_complex", full_filter_complex,
+        "-map", curr_v,
+        "-map", "0:a",
+        "-pix_fmt", "yuv420p",
+        *encoder_flags,
+        "-c:a", "aac",
+        "-b:a", "160k",
+        abs_out
+    ]
+
+    logger.info(f"Rendering 9:16 vertical clip (layout={active_layout}) -> {output_path}")
 
     try:
         ret = run_tracked_command(cmd, job_id=job_id, cwd=cwd_dir)
@@ -147,7 +209,14 @@ def render_vertical_clip(
                 f"NVENC vertical render failed ({e}). Falling back to libx264..."
             )
             return render_vertical_clip(
-                rough_clip_path, ass_path, output_path, overlay=overlay, use_cpu=True, job_id=job_id
+                rough_clip_path,
+                ass_path,
+                output_path,
+                overlay=overlay,
+                use_cpu=True,
+                job_id=job_id,
+                layout=layout,
+                facecam_info=facecam_info,
             )
         raise RuntimeError(f"FFmpeg vertical render failed: {e}")
 

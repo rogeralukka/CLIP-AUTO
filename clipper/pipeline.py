@@ -10,6 +10,7 @@ from .captions import load_preset, make_ass
 from .config import load_config
 from .cutter import cut_rough_clip, render_vertical_clip
 from .detection import find_moments
+from .facecam import detect_facecam
 from .downloader import (
     download_audio_and_chat,
     download_video_section,
@@ -345,15 +346,27 @@ def render_pipeline_moments(
 
         check_cancelled_or_paused(job_id)
 
-        # Step C: Subtitles ASS
-        make_ass(words, ass_path, preset=preset)
+        # Detect facecam and determine vertical layout
+        clip_layout = m.get("layout", "auto") if isinstance(m, dict) else "auto"
+        facecam_info = None
+        if clip_layout in ("auto", "split", "face"):
+            facecam_info = detect_facecam(rough_path)
+            if clip_layout == "auto":
+                active_layout = "split" if facecam_info.get("found", False) else "gameplay"
+            else:
+                active_layout = clip_layout
+        else:
+            active_layout = clip_layout
+
+        # Step C: Subtitles ASS adapted to layout
+        make_ass(words, ass_path, preset=preset, layout=active_layout)
 
         # Step D: Render Vertical 9:16
         if progress_callback:
             progress_callback(
                 "render",
                 step_base_pct + int(40 / total),
-                f"Rendering: clip {i} of {total} (1080x1920 NVENC)",
+                f"Rendering: clip {i} of {total} (1080x1920 {active_layout})",
                 {"clip_index": i, "total": total},
             )
 
@@ -364,6 +377,8 @@ def render_pipeline_moments(
             overlay=overlay,
             use_cpu=cpu,
             job_id=job_id,
+            layout=active_layout,
+            facecam_info=facecam_info,
         )
         check_cancelled_or_paused(job_id)
 
@@ -379,6 +394,8 @@ def render_pipeline_moments(
             "preview": preview,
             "word_count": len(words),
             "transcript": transcript_text,
+            "layout": active_layout,
+            "facecam": facecam_info,
         })
         log_job_message(job_id, f"Finished rendering clip {i} of {total} ({os.path.basename(final_path)})")
 

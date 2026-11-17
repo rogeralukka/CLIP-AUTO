@@ -99,6 +99,7 @@ def make_ass(
     preset: Optional[Dict[str, Any]] = None,
     max_words: Optional[int] = None,
     gap_break: Optional[float] = None,
+    layout: str = "auto",
 ) -> str:
     """Create a word-by-word karaoke ASS subtitle file from transcribed words.
 
@@ -108,9 +109,18 @@ def make_ass(
         preset: Styling dictionary (or loaded default).
         max_words: Override max words per subtitle card.
         gap_break: Override silence duration threshold to start a new subtitle card.
+        layout: Vertical video layout ('split', 'gameplay', 'face', or 'auto').
     """
     if preset is None:
-        preset = DEFAULT_PRESET
+        preset = dict(DEFAULT_PRESET)
+    else:
+        preset = dict(preset)
+
+    # Adjust vertical margin based on layout to avoid overlapping facecam
+    if layout == "split":
+        preset["margin_v"] = preset.get("split_margin_v", 360)
+    elif layout == "gameplay":
+        preset["margin_v"] = preset.get("gameplay_margin_v", 480)
 
     limit_words = max_words if max_words is not None else preset.get("max_words_per_line", 5)
     gap_limit = gap_break if gap_break is not None else preset.get("gap_break_seconds", 0.6)

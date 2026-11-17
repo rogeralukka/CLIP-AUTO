@@ -81,7 +81,7 @@ Write-Host "  Installing dependencies from requirements.txt..." -ForegroundColor
 Write-Host "  Python packages installed successfully." -ForegroundColor Green
 
 # 4. TwitchDownloaderCLI
-Write-Host "`n[4/5] Checking TwitchDownloaderCLI..." -ForegroundColor Yellow
+Write-Host "`n[4/6] Checking TwitchDownloaderCLI..." -ForegroundColor Yellow
 $binDir = Join-Path $PSScriptRoot "bin"
 if (-not (Test-Path $binDir)) {
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
@@ -101,8 +101,26 @@ if (-not (Test-Path $tdCliPath)) {
     Write-Host "  TwitchDownloaderCLI is present at: $tdCliPath" -ForegroundColor Green
 }
 
-# 5. Run check_setup.py
-Write-Host "`n[5/5] Running check_setup.py verification..." -ForegroundColor Yellow
+# 5. Facecam Detection Models
+Write-Host "`n[5/6] Checking Facecam Models..." -ForegroundColor Yellow
+$modelsDir = Join-Path $PSScriptRoot "models"
+if (-not (Test-Path $modelsDir)) {
+    New-Item -ItemType Directory -Path $modelsDir -Force | Out-Null
+}
+$blazeFace = Join-Path $modelsDir "blaze_face_short_range.tflite"
+$haarModel = Join-Path $modelsDir "haarcascade_frontalface_default.xml"
+if (-not (Test-Path $blazeFace)) {
+    Write-Host "  Downloading MediaPipe BlazeFace model..." -ForegroundColor Gray
+    curl.exe -s -L -o $blazeFace "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite"
+}
+if (-not (Test-Path $haarModel)) {
+    Write-Host "  Downloading OpenCV Haar cascade model..." -ForegroundColor Gray
+    curl.exe -s -L -o $haarModel "https://raw.githubusercontent.com/opencv/opencv/4.x/data/haarcascades/haarcascade_frontalface_default.xml"
+}
+Write-Host "  Facecam models verified." -ForegroundColor Green
+
+# 6. Run check_setup.py
+Write-Host "`n[6/6] Running check_setup.py verification..." -ForegroundColor Yellow
 & .\.venv\Scripts\python.exe check_setup.py
 
 Write-Host "`n==========================================================" -ForegroundColor Cyan
