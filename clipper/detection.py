@@ -440,13 +440,15 @@ def find_moments(
         ))
 
     # Deduplication against downloads/<vod_id>/clipped_moments.json
-    target_vod_id = vod_id or "default"
-    deduped = dedupe_moments(
-        candidate_moments,
-        vod_id=target_vod_id,
-        overlap_threshold=cfg.get("signals", {}).get("dedupe_overlap_threshold", 0.50),
-        downloads_dir="downloads",
-    )
+    if vod_id:
+        deduped = dedupe_moments(
+            candidate_moments,
+            vod_id=vod_id,
+            overlap_threshold=cfg.get("signals", {}).get("dedupe_overlap_threshold", 0.50),
+            downloads_dir="downloads",
+        )
+    else:
+        deduped = candidate_moments
 
     deduped.sort(key=lambda m: m["start"])
     logger.info(f"Composite detection found {len(deduped)} moments after boundary snapping and deduplication.")
