@@ -298,6 +298,7 @@ def find_moments(
     vod_id: Optional[str] = None,
     min_clip_length: float = 15.0,
     max_clip_length: float = 60.0,
+    progress_cb: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Phase 2: Composite Hype Curve with robust z-scores, smart boundaries, and deduplication."""
     check_cancelled(job_id)
@@ -329,25 +330,59 @@ def find_moments(
         heatmap_data=heatmap_data,
         window_size=cfg.get("signals", {}).get("rolling_window_seconds", 600),
         job_id=job_id,
+        progress_cb=progress_cb,
     )
     check_cancelled(job_id)
 
     if vod_id:
         save_hype_curve(vod_id, composite_curve, breakdown_z)
 
-    # Rolling window smoothing over composite curve
+    # Smooth the composite over a few seconds, then RE-STANDARDISE it.
+    # The composite is a weighted average of z-scores, and averaging shrinks the spread a lot,
+    # so an absolute "z >= 2" on it almost never fired (that is why a whole stream gave 1 clip).
+    # Re-scoring the smoothed curve against its own baseline puts the threshold back on a
+    # meaningful scale.
     win = max(2, window)
-    csum = np.cumsum(np.insert(composite_curve, 0, 0.0))
-    window_scores = (csum[win:] - csum[:-win]) / float(win)
+    kernel = np.ones(win, dtype=np.float32) / float(win)
+    smooth = np.convolve(composite_curve, kernel, mode="same")
+    from .signals import compute_robust_z_scores
+    cz = compute_robust_z_scores(smooth, window_size=cfg.get("signals", {}).get("rolling_window_seconds", 600))
 
-    peaks: List[Tuple[int, float]] = []
-    for s_idx, sc in enumerate(window_scores):
-        if sc >= z_thresh:
-            peaks.append((s_idx, float(sc)))
+    # How many moments to look for.
+    stream_min = duration / 60.0
+    if top is not None and top > 0:
+        target = int(top)
+        floor = int(top)
+    else:
+        # Auto: about one candidate per 5 minutes of stream, 6..40
+        target = int(min(cfg.get("signals", {}).get("safety_max_clips", safety_max), max(6, round(stream_min / 5.0))))
+        # Always offer at least a handful so there is something to review on a quiet stream
+        floor = int(min(target, max(4, round(stream_min / 12.0))))
 
-    # Fallback to chat spike detector or audio loudness detector if composite curve has 0 peaks
+    # Peak picking: take the strongest seconds first and keep picks apart from each other
+    min_sep = int(max(25.0, 0.6 * float(max_clip_length)))
+    order = np.argsort(-cz)
+    picked: List[Tuple[int, float, bool]] = []  # (second, score, weak)
+    taken = np.zeros(len(cz), dtype=bool)
+    for idx in order:
+        idx = int(idx)
+        sc = float(cz[idx])
+        if sc <= 0.0 or len(picked) >= target:
+            break
+        if taken[idx]:
+            continue
+        weak = sc < z_thresh
+        if weak and len(picked) >= floor:
+            break
+        picked.append((idx, sc, weak))
+        taken[max(0, idx - min_sep): idx + min_sep + 1] = True
+
+    peaks: List[Tuple[int, float]] = [(p, sc) for p, sc, _ in picked]
+    weak_secs = {p for p, _, w in picked if w}
+
+    # Fallback to chat spike detector or audio loudness detector if the curve is flat
     if not peaks:
-        logger.info(f"Composite hype curve found 0 moments at z>={z_thresh:.1f}; evaluating fallback paths...")
+        logger.info("Composite hype curve is flat; evaluating fallback paths...")
         if comments and len(comments) >= min_msgs:
             legacy_spikes = spike_moments(
                 comments, window=window, z_thresh=z_thresh, min_msgs=min_msgs,
@@ -367,22 +402,11 @@ def find_moments(
 
         return []
 
-    # Merge nearby peaks within merge_gap
-    peaks.sort(key=lambda p: p[0])
-    merged_peaks: List[Tuple[int, float]] = []
-    gap = cfg.get("signals", {}).get("merge_gap_seconds", merge_gap)
-
-    for p_sec, sc in peaks:
-        if merged_peaks and p_sec - merged_peaks[-1][0] <= gap:
-            if sc > merged_peaks[-1][1]:
-                merged_peaks[-1] = (p_sec, sc)
-        else:
-            merged_peaks.append((p_sec, sc))
-
-    # Sort peaks by score descending
-    merged_peaks.sort(key=lambda p: -p[1])
-    limit = top if (top is not None and top > 0) else cfg.get("signals", {}).get("safety_max_clips", safety_max)
-    selected_peaks = merged_peaks[:limit]
+    logger.info(
+        f"Picked {len(peaks)} peaks ({len(peaks) - len(weak_secs)} strong, {len(weak_secs)} below threshold) "
+        f"from a {stream_min:.0f} min stream (target {target})."
+    )
+    selected_peaks = peaks
 
     # Smart boundaries & Moment creation
     candidate_moments: List[Dict[str, Any]] = []
@@ -390,7 +414,7 @@ def find_moments(
     max_trail = cfg.get("signals", {}).get("max_trail_seconds", 5.0)
 
     for p_sec, sc in selected_peaks:
-        peak_center = float(p_sec + win / 2.0)
+        peak_center = float(p_sec)
 
         # Smart sentence boundary snapping
         st, et = snap_moment_boundaries(
@@ -434,9 +458,10 @@ def find_moments(
             start=st,
             end=et,
             peak_second=p_idx,
-            score=round(sc, 2),
+            score=round(min(sc, 20.0), 2),
             preview=preview_text,
             breakdown=sig_breakdown,
+            weak=p_sec in weak_secs,
         ))
 
     # Deduplication against downloads/<vod_id>/clipped_moments.json

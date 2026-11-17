@@ -5,6 +5,8 @@ import os
 import subprocess
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from .captions import escape_ffmpeg_ass_path
 from .config import load_config
 from .facecam import compute_gameplay_crop, detect_facecam
@@ -68,6 +70,105 @@ def get_loudnorm_audio_filter(
     return None
 
 
+def _decode_envelope(media: str, start: float, duration: float, rate: int = 100) -> Optional[np.ndarray]:
+    """Decode mono audio and return a loudness envelope sampled `rate` times per second."""
+    ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
+    sr = 8000
+    cmd = [ffmpeg_bin, "-v", "error", "-ss", f"{max(0.0, start):.3f}", "-t", f"{duration:.3f}",
+           "-i", os.path.abspath(media), "-vn", "-ac", "1", "-ar", str(sr), "-f", "s16le", "-"]
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=120)
+    except Exception:
+        return None
+    if res.returncode != 0 or not res.stdout:
+        return None
+    pcm = np.frombuffer(res.stdout, dtype=np.int16).astype(np.float32)
+    hop = sr // rate
+    n = len(pcm) // hop
+    if n < rate:  # under a second of audio
+        return None
+    return np.abs(pcm[: n * hop]).reshape(n, hop).mean(axis=1)
+
+
+def find_section_audio_offset(section_path: str, stream_audio: str, section_start: float,
+                              duration: float, search: float = 4.0) -> float:
+    """How far (seconds) the downloaded video section is from where we asked it to start.
+
+    Section downloads can land a little off the requested time (keyframes, Twitch segments).
+    We line the section's own sound up against the full-stream audio we already have, so
+    the picture, the sound and the captions all match. Returns 0.0 when unsure.
+    """
+    probe = min(duration, 30.0)
+    sec_env = _decode_envelope(section_path, 0.0, probe)
+    if sec_env is None or float(np.max(sec_env)) < 30.0:  # no usable sound in the section
+        return 0.0
+    ref_start = max(0.0, section_start - search)
+    lead = section_start - ref_start
+    ref_env = _decode_envelope(stream_audio, ref_start, probe + lead + search)
+    if ref_env is None or len(ref_env) <= len(sec_env):
+        return 0.0
+    a = sec_env - sec_env.mean()
+    a_norm = float(np.linalg.norm(a)) or 1.0
+    best_lag, best_corr = 0, -1.0
+    for lag in range(0, len(ref_env) - len(a) + 1):
+        b = ref_env[lag: lag + len(a)]
+        b = b - b.mean()
+        c = float(np.dot(a, b)) / (a_norm * (float(np.linalg.norm(b)) or 1.0))
+        if c > best_corr:
+            best_corr, best_lag = c, lag
+    if best_corr < 0.5:
+        return 0.0
+    return round(best_lag / 100.0 - lead, 2)
+
+
+def attach_stream_audio(section_path: str, stream_audio: str, section_start: float,
+                        output_path: str, job_id: Optional[str] = None) -> "tuple[str, float]":
+    """Replace a section's sound with the matching part of the full-stream audio.
+
+    The full-stream audio is what Whisper heard and what the Review page plays, so it is
+    known-good. Section downloads sometimes come back silent or without an audio track,
+    which gave clips with no sound. This makes the clip's sound come from the source that
+    definitely works, lined up with the picture.
+
+    Returns (path, delta): delta is how many seconds later than requested the section's
+    picture really starts, so the caller can shift its cut and the captions stay in sync.
+    """
+    side = os.path.splitext(os.path.abspath(output_path))[0] + ".json"
+    if os.path.isfile(output_path) and os.path.getsize(output_path) > 1024 and os.path.isfile(side):
+        try:
+            with open(side, "r", encoding="utf-8") as f:
+                return os.path.abspath(output_path), float(json.load(f).get("delta", 0.0))
+        except Exception:
+            pass
+    from .detection import get_media_duration_seconds
+    dur = float(get_media_duration_seconds(section_path) or 0.0)
+    if dur <= 0.5 or not (stream_audio and os.path.isfile(stream_audio)):
+        return section_path, 0.0
+    offset = find_section_audio_offset(section_path, stream_audio, section_start, dur)
+    if offset:
+        logger.info(f"Section starts {offset:+.2f}s from the requested time; lining audio up.")
+    ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-i", os.path.abspath(section_path),
+        "-ss", f"{max(0.0, section_start + offset):.3f}", "-t", f"{dur:.3f}",
+        "-i", os.path.abspath(stream_audio),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-shortest", os.path.abspath(output_path),
+    ]
+    ret = run_tracked_command(cmd, job_id=job_id)
+    if ret != 0 or not os.path.isfile(output_path):
+        logger.warning("Could not attach stream audio; keeping the section's own audio.")
+        return section_path, 0.0
+    try:
+        with open(side, "w", encoding="utf-8") as f:
+            json.dump({"delta": offset}, f)
+    except Exception:
+        pass
+    return os.path.abspath(output_path), offset
+
+
 def cut_rough_clip(
     source_video: str,
     start_sec: float,
@@ -112,6 +213,31 @@ def cut_rough_clip(
     return os.path.abspath(output_path)
 
 
+def build_pan_expression(track: List[Any], crop_w: int, src_w: int) -> str:
+    """FFmpeg expression for the crop's x position over time, from (t, centre_x) points.
+
+    Piecewise-linear between points so the crop glides instead of jumping.
+    """
+    max_x = max(0, src_w - crop_w)
+    pts = []
+    for t, cx in track:
+        x = int(min(max_x, max(0, float(cx) - crop_w / 2.0)))
+        if pts and abs(float(t) - pts[-1][0]) < 0.2:
+            continue
+        pts.append((round(float(t), 2), x))
+    if not pts:
+        return str(max_x // 2)
+    if len(pts) > 90:  # keep the expression a sane size
+        step = len(pts) / 90.0
+        pts = [pts[int(i * step)] for i in range(90)] + [pts[-1]]
+    expr = str(pts[-1][1])
+    for i in range(len(pts) - 2, -1, -1):
+        (t0, x0), (t1, x1) = pts[i], pts[i + 1]
+        dt = max(0.01, t1 - t0)
+        expr = f"if(lt(t,{t1}),{x0}+({x1 - x0})*(t-{t0})/{dt:.2f},{expr})"
+    return f"if(lt(t,{pts[0][0]}),{pts[0][1]},{expr})"
+
+
 def render_vertical_clip(
     rough_clip_path: str,
     ass_path: Optional[str],
@@ -121,6 +247,7 @@ def render_vertical_clip(
     job_id: Optional[str] = None,
     layout: str = "auto",
     facecam_info: Optional[Dict[str, Any]] = None,
+    progress_cb: Optional[Any] = None,
 ) -> str:
     """Render 1080x1920 vertical video with facecam-aware layout, burned karaoke captions, and overlay.
 
@@ -144,8 +271,8 @@ def render_vertical_clip(
     if active_layout == "auto":
         if facecam_info is None:
             facecam_info = detect_facecam(abs_rough)
-        active_layout = "split" if facecam_info.get("found", False) else "gameplay"
-    elif active_layout in ("split", "face") and facecam_info is None:
+        active_layout = facecam_info.get("layout") or ("split" if facecam_info.get("found") else "gameplay")
+    elif active_layout in ("split", "face", "irl") and facecam_info is None:
         facecam_info = detect_facecam(abs_rough)
 
     frame_size = facecam_info.get("frame_size", (1920, 1080)) if facecam_info else (1920, 1080)
@@ -172,7 +299,15 @@ def render_vertical_clip(
             f"[0:v] crop={gw}:{gh}:{gx}:{gy},scale=1080:1280:force_original_aspect_ratio=increase,crop=1080:1280,setsar=1 [bot_game]; "
             f"[top_face][bot_game] vstack=inputs=2 [v_base]"
         )
-    elif active_layout == "face":
+    elif active_layout in ("irl", "face") and (facecam_info or {}).get("track"):
+        # Moving 9:16 window that follows the main person (IRL / camera streams)
+        crop_h = src_h
+        crop_w = min(src_w, int(round(crop_h * 9 / 16 / 2)) * 2)
+        x_expr = build_pan_expression(facecam_info["track"], crop_w, src_w)
+        filter_parts.append(
+            f"[0:v] crop={crop_w}:{crop_h}:x='{x_expr}':y=0,scale=1080:1920,setsar=1 [v_base]"
+        )
+    elif active_layout in ("face", "irl"):
         face_box = facecam_info.get("face_box") if facecam_info else None
         if face_box:
             fx, fy, fw, fh = face_box
@@ -269,12 +404,21 @@ def render_vertical_clip(
             target_lra=polish_cfg.get("target_lra", 11.0),
         )
 
+    # Short fades so the clip doesn't start/stop with a click mid-word
+    try:
+        from .detection import get_media_duration_seconds
+        a_dur = float(get_media_duration_seconds(abs_rough))
+    except Exception:
+        a_dur = 0.0
+    a_chain = [af_filter] if af_filter else []
+    if a_dur > 2.0:
+        a_chain += ["afade=t=in:st=0:d=0.12", f"afade=t=out:st={max(0.0, a_dur - 0.35):.3f}:d=0.35"]
     audio_flags = ["-c:a", "aac", "-b:a", "160k"]
-    if af_filter:
-        audio_flags = ["-af", af_filter, *audio_flags]
+    if a_chain:
+        audio_flags = ["-af", ",".join(a_chain), *audio_flags]
 
     cmd = [
-        ffmpeg_bin, "-y",
+        ffmpeg_bin, "-y", "-progress", "pipe:1", "-nostats",
         *inputs,
         "-filter_complex", full_filter_complex,
         "-map", curr_v,
@@ -287,8 +431,16 @@ def render_vertical_clip(
 
     logger.info(f"Rendering 9:16 vertical clip (layout={active_layout}) -> {output_path}")
 
+    def on_line(line: str):
+        # ffmpeg -progress prints out_time_us=<microseconds> as it encodes
+        if progress_cb and a_dur > 0 and line.startswith(("out_time_us=", "out_time_ms=")):
+            try:
+                progress_cb(min(1.0, int(line.split("=", 1)[1]) / 1e6 / a_dur))
+            except ValueError:
+                pass
+
     try:
-        ret = run_tracked_command(cmd, job_id=job_id, cwd=cwd_dir)
+        ret = run_tracked_command(cmd, job_id=job_id, cwd=cwd_dir, line_callback=on_line)
         if ret != 0:
             raise RuntimeError(f"FFmpeg vertical render exited with code {ret}")
     except Exception as e:
@@ -306,6 +458,7 @@ def render_vertical_clip(
                 job_id=job_id,
                 layout=layout,
                 facecam_info=facecam_info,
+                progress_cb=progress_cb,
             )
         raise RuntimeError(f"FFmpeg vertical render failed: {e}")
 

@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("clipper.captions")
@@ -66,20 +67,74 @@ def fmt_ts(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-def extract_hook_phrase(words: List[Tuple[float, float, str]], max_words: int = 7) -> str:
-    """Extract the first strong phrase from word timestamps as a fallback hook title."""
+_FILLER = {
+    "yeah", "yea", "yes", "no", "okay", "ok", "so", "um", "uh", "uhh", "umm", "like", "right",
+    "oh", "ah", "and", "but", "the", "a", "i", "it", "is", "was", "well", "hmm", "mm", "huh",
+    "you", "know", "just", "that", "this", "bro", "dude", "man", "here", "there",
+}
+
+
+def extract_hook_phrase(words: List[Tuple[float, float, str]], max_words: int = 8) -> str:
+    """Pick a short, punchy line actually said in the clip to use as the hook.
+
+    Returns "" when nothing in the clip is worth putting on screen; a blank hook is better
+    than "Yeah". Only real transcript words are used, never invented text.
+    """
     if not words:
         return ""
-    text_words = [w[2].strip() for w in words if w[2].strip()]
-    if not text_words:
-        return ""
-    selected = []
-    for w in text_words[:max_words]:
-        selected.append(w)
-        if any(w.endswith(punct) for punct in [".", "!", "?", ","]):
-            break
-    clean = " ".join(selected).rstrip(",.")
-    return clean
+    # Split into sentences / thoughts on punctuation and pauses
+    sentences: List[List[Tuple[float, float, str]]] = []
+    cur: List[Tuple[float, float, str]] = []
+    for i, w in enumerate(words):
+        if not w[2].strip():
+            continue
+        if cur and (w[0] - cur[-1][1] >= 0.6):
+            sentences.append(cur)
+            cur = []
+        cur.append(w)
+        if w[2].strip().endswith((".", "!", "?")):
+            sentences.append(cur)
+            cur = []
+    if cur:
+        sentences.append(cur)
+
+    best, best_score = "", 0.0
+    # A long run-on line still offers its opening words as a candidate
+    sentences = [snt if len(snt) <= max_words else snt[:max_words] for snt in sentences]
+    for sent in sentences:
+        toks = [t[2].strip() for t in sent]
+        clean = [re.sub(r"[^\w']", "", t).lower() for t in toks]
+        content = [c for c in clean if c and c not in _FILLER]
+        if len(toks) < 3 or len(toks) > max_words or len(content) < 2:
+            continue
+        score = len(content) * 0.6
+        text = " ".join(toks)
+        if "!" in text:
+            score += 1.5
+        if "?" in text:
+            score += 0.8
+        if any(c.startswith("haha") or c in ("lol", "lmao", "what", "wait", "no") for c in clean):
+            score += 0.6
+        # earlier lines make better hooks (they set up the clip)
+        score -= 0.02 * sent[0][0]
+        if score > best_score:
+            best_score, best = score, text
+    best = best.strip().rstrip(",.")
+    return best if best_score >= 2.0 else ""
+
+
+def wrap_hook(text: str, max_chars: int = 16) -> str:
+    """Break the hook into lines that fit a 1080px-wide frame (ASS here does not auto-wrap).
+
+    Long hooks also get a smaller font so three lines never cover the video.
+    """
+    import textwrap
+    lines = textwrap.wrap(text.upper().strip(), width=max_chars) or [""]
+    size = ""
+    if len(lines) > 2:
+        lines = textwrap.wrap(text.upper().strip(), width=22)[:3]
+        size = r"{\fs70}"
+    return size + r"\N".join(lines)
 
 
 def build_ass_header(preset: Dict[str, Any], hook_margin_v: int = 240) -> str:
@@ -153,6 +208,8 @@ def make_ass(
 
     limit_words = max_words if max_words is not None else preset.get("max_words_per_line", 5)
     gap_limit = gap_break if gap_break is not None else preset.get("gap_break_seconds", 0.6)
+    # Keep each caption line inside the 1080px frame (no auto-wrap) and break at sentence ends
+    max_chars = int(preset.get("max_chars_per_line", 18))
 
     groups: List[List[Tuple[float, float, str]]] = []
     cur: List[Tuple[float, float, str]] = []
@@ -163,7 +220,10 @@ def make_ass(
         if not clean_text:
             continue
 
-        if cur and (len(cur) >= limit_words or (start_t - cur[-1][1]) > gap_limit):
+        cur_chars = sum(len(c[2]) + 1 for c in cur)
+        ends_sentence = bool(cur) and cur[-1][2].endswith((".", "!", "?"))
+        if cur and (len(cur) >= limit_words or (start_t - cur[-1][1]) > gap_limit
+                    or cur_chars + len(clean_text) > max_chars or ends_sentence):
             groups.append(cur)
             cur = []
         cur.append((start_t, end_t, clean_text))
@@ -177,7 +237,7 @@ def make_ass(
     final_hook = hook_title or extract_hook_phrase(words)
     if final_hook:
         lines.append(
-            f"Dialogue: 1,0:00:00.00,{fmt_ts(hook_duration)},Hook,,0,0,0,,{final_hook.upper()}"
+            f"Dialogue: 1,0:00:00.00,{fmt_ts(hook_duration)},Hook,,0,0,0,,{wrap_hook(final_hook)}"
         )
 
     for g in groups:

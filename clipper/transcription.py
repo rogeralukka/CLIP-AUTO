@@ -3,7 +3,8 @@ import gc
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import load_config
 from .process_manager import check_cancelled_or_paused
@@ -81,8 +82,12 @@ def transcribe_full_audio(
     use_cpu: bool = False,
     output_json: Optional[str] = None,
     job_id: Optional[str] = None,
+    progress_callback: Optional[Callable[[float, float, float], None]] = None,
 ) -> Dict[str, Any]:
     """Transcribe full stream audio ONCE with faster-whisper.
+
+    progress_callback(done_seconds, total_seconds, elapsed_wall_seconds) is called as each
+    piece of the transcript comes out, so the UI can show real progress and a real ETA.
 
     Caches results to output_json (e.g. downloads/<vod_id>/transcript.json).
     Returns dict with 'words', 'segments', and metadata.
@@ -110,18 +115,46 @@ def transcribe_full_audio(
     logger.info(f"Transcribing full audio '{os.path.basename(abs_audio)}' with word timestamps (VAD={vad_on})...")
 
     check_cancelled_or_paused(job_id)
-    segments_gen, info = model.transcribe(
-        abs_audio,
-        word_timestamps=True,
-        vad_filter=vad_on,
-        vad_parameters=dict(min_silence_duration_ms=500) if vad_on else None,
-    )
+    t0 = time.time()
+    segments_gen, info = None, None
+    on_gpu = _LOADED_MODEL_PARAMS[1] == "cuda"
+    batch_size = int(cfg.get("audio", {}).get("whisper_batch_size", 16))
+    if on_gpu and batch_size > 1:
+        # Batched inference is several times faster on a GPU for long streams
+        try:
+            from faster_whisper import BatchedInferencePipeline
+            batched = BatchedInferencePipeline(model=model)
+            segments_gen, info = batched.transcribe(
+                abs_audio, word_timestamps=True, batch_size=batch_size, vad_filter=True,
+            )
+            logger.info(f"Using batched Whisper (batch_size={batch_size}).")
+        except Exception as e:
+            logger.warning(f"Batched Whisper unavailable ({e}); using standard mode.")
+            segments_gen = None
+    if segments_gen is None:
+        segments_gen, info = model.transcribe(
+            abs_audio,
+            word_timestamps=True,
+            vad_filter=vad_on,
+            vad_parameters=dict(min_silence_duration_ms=500) if vad_on else None,
+        )
+
+    total_sec = float(getattr(info, "duration", 0.0) or 0.0)
+    if progress_callback:
+        progress_callback(0.0, total_sec, time.time() - t0)
 
     words_list: List[Dict[str, Any]] = []
     segments_list: List[Dict[str, Any]] = []
+    last_report = 0.0
 
     for sg in segments_gen:
         check_cancelled_or_paused(job_id)
+        if progress_callback and time.time() - last_report >= 1.0:
+            last_report = time.time()
+            try:
+                progress_callback(float(sg.end), total_sec, last_report - t0)
+            except Exception:
+                pass
         seg_record = {
             "start": round(sg.start, 3),
             "end": round(sg.end, 3),

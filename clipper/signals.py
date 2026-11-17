@@ -154,6 +154,7 @@ def extract_audio_loudness_curve(
     media_path: str,
     duration: int,
     job_id: Optional[str] = None,
+    progress_cb: Optional[Any] = None,
 ) -> np.ndarray:
     """Extract momentary loudness (LUFS) per second using FFmpeg ebur128."""
     check_cancelled(job_id)
@@ -170,8 +171,21 @@ def extract_audio_loudness_curve(
     logger.info(f"Extracting momentary loudness with FFmpeg ebur128 on {os.path.basename(media_path)}...")
     lines: List[str] = []
 
+    last = [0.0]
+    t_re = re.compile(r"t:\s*([\d\.]+)")
+
     def on_line(l: str):
         lines.append(l)
+        if progress_cb and duration > 0:
+            m = t_re.search(l)
+            if m:
+                t = float(m.group(1))
+                if t - last[0] >= 30.0:
+                    last[0] = t
+                    try:
+                        progress_cb(min(1.0, t / duration))
+                    except Exception:
+                        pass
 
     try:
         run_tracked_command(cmd, job_id=job_id, line_callback=on_line)
@@ -279,6 +293,7 @@ def build_hype_curve(
     heatmap_data: Optional[Any] = None,
     window_size: int = 600,
     job_id: Optional[str] = None,
+    progress_cb: Optional[Any] = None,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[int, List[str]]]:
     """Build multi-signal composite hype curve using robust z-scores and re-normalized weights.
 
@@ -310,7 +325,7 @@ def build_hype_curve(
 
     # Signal 3: Streamer Loudness
     if media_path and os.path.isfile(media_path):
-        loudness_raw = extract_audio_loudness_curve(media_path, dur, job_id=job_id)
+        loudness_raw = extract_audio_loudness_curve(media_path, dur, job_id=job_id, progress_cb=progress_cb)
         breakdown_z["streamer_loudness"] = compute_robust_z_scores(loudness_raw, window_size=window_size)
     else:
         breakdown_z["streamer_loudness"] = np.zeros(dur, dtype=np.float32)
@@ -338,15 +353,57 @@ def build_hype_curve(
     total_weight = sum(active_weights.values())
     composite_curve = np.zeros(dur, dtype=np.float32)
 
+    # Cap each signal so one of them can't drown out the rest (the YouTube replay graph is
+    # blocky and used to decide everything on its own).
+    caps = {"youtube_heatmap": 4.0}
     if total_weight > 0:
+        agree = np.zeros(dur, dtype=np.float32)
         for sig_name, w in active_weights.items():
             norm_w = w / total_weight
-            composite_curve += norm_w * breakdown_z[sig_name]
+            z = np.minimum(breakdown_z[sig_name], caps.get(sig_name, 6.0))
+            composite_curve += norm_w * z
+            agree += (z >= 1.5).astype(np.float32)
+        # Bonus when several signals spike together (chat + loud + fast talk = real moment)
+        composite_curve += 0.35 * np.maximum(0.0, agree - 1.0)
     else:
         # Fallback if all signals are completely flat
         composite_curve = breakdown_z.get("chat_rate", np.zeros(dur, dtype=np.float32))
 
     return composite_curve, breakdown_z, msgs_by_sec
+
+
+def _sentence_marks(words: List[Dict[str, Any]], lo: float, hi: float, pause: float = 0.6):
+    """Natural cut points between lo and hi.
+
+    starts: times where a sentence/thought begins (after . ! ? or after a pause)
+    ends:   times where one finishes (word ending in . ! ? or followed by a pause)
+    Each item is (time, strength) where strength grows with the pause length.
+    """
+    import bisect
+    if not words:
+        return [], []
+    keys = [float(w.get("start", 0.0)) for w in words]
+    i0 = max(0, bisect.bisect_left(keys, lo - 2.0) - 1)
+    i1 = min(len(words), bisect.bisect_right(keys, hi + 2.0) + 1)
+    starts, ends = [], []
+    for i in range(i0, i1):
+        w = words[i]
+        ws, we = float(w.get("start", 0.0)), float(w.get("end", 0.0))
+        txt = str(w.get("word", "")).strip()
+        prev = words[i - 1] if i > 0 else None
+        nxt = words[i + 1] if i + 1 < len(words) else None
+        gap_before = ws - float(prev["end"]) if prev else 9.0
+        gap_after = float(nxt["start"]) - we if nxt else 9.0
+        prev_txt = str(prev.get("word", "")).strip() if prev else ""
+        if lo <= ws <= hi and (gap_before >= pause or prev_txt.endswith((".", "!", "?"))):
+            # cut a little before the first word, but never into the previous word
+            t = max(ws - 0.25, (float(prev["end"]) + 0.05) if prev else 0.0)
+            starts.append((t, min(3.0, gap_before) + (0.5 if prev_txt.endswith((".", "!", "?")) else 0.0)))
+        if lo <= we <= hi and (gap_after >= pause or txt.endswith((".", "!", "?"))):
+            # leave room for the laugh / breath after the last word, stop before the next one
+            t = min(we + 0.6, (float(nxt["start"]) - 0.05) if nxt else we + 0.6)
+            ends.append((t, min(3.0, gap_after) + (0.5 if txt.endswith((".", "!", "?")) else 0.0)))
+    return starts, ends
 
 
 def snap_moment_boundaries(
@@ -361,17 +418,18 @@ def snap_moment_boundaries(
     after: float = 20.0,
     hype_curve: Optional[np.ndarray] = None,
 ) -> Tuple[float, float]:
-    """Choose clip boundaries around a hype peak.
+    """Choose clip boundaries around a hype peak so the clip starts and ends cleanly.
 
-    Chat and loudness peak AFTER the thing that caused them, so the clip must lead with
-    setup: start = peak - before. The end follows the hype curve: the clip runs until the
-    reaction has died down (curve under 25% of the peak for 4s), capped at peak + after.
-    Both ends are then snapped to sentence boundaries and clamped to min/max length.
+    - Start: chat and loudness peak AFTER the thing that caused them, so the clip leads with
+      setup (~`before` seconds) and begins where a sentence begins or after a pause, never
+      mid-word.
+    - End: after the reaction dies down (hype curve back under 30% of the peak), at the end
+      of a sentence or at a pause, with a little room for the laugh/breath.
     """
-    raw_start = max(0.0, peak_time - before)
-    raw_end = min(stream_duration, peak_time + after)
+    words = (full_transcript_data or {}).get("words", []) or []
 
-    # Adaptive end: stop a few seconds after the reaction dies down
+    # 1. Where does the reaction settle?
+    settle = min(stream_duration, peak_time + after)
     if hype_curve is not None and len(hype_curve) > 0:
         p = int(min(len(hype_curve) - 1, max(0, peak_time)))
         lo, hi = max(0, p - 3), min(len(hype_curve), p + 4)
@@ -379,36 +437,46 @@ def snap_moment_boundaries(
         if peak_val > 0:
             quiet = 0
             limit = int(min(len(hype_curve), peak_time + after))
-            for sec in range(p + 6, limit):
-                quiet = quiet + 1 if hype_curve[sec] < 0.25 * peak_val else 0
-                if quiet >= 4:
-                    raw_end = min(raw_end, float(sec + 2))
+            for sec in range(p + 4, limit):
+                quiet = quiet + 1 if hype_curve[sec] < 0.30 * peak_val else 0
+                if quiet >= 3:
+                    settle = float(sec)
                     break
+    settle = max(settle, min(stream_duration, peak_time + 5.0))
 
-    best_start, best_end = raw_start, raw_end
-    segments = (full_transcript_data or {}).get("segments", []) or []
-    if segments:
-        starts = [float(sg.get("start", 0.0)) for sg in segments]
-        ends = [float(sg.get("end", 0.0)) for sg in segments]
-        cand = [x for x in starts if abs(x - raw_start) <= max_lead and x < peak_time]
-        if cand:
-            best_start = min(cand, key=lambda x: abs(x - raw_start))
-        cand = [x for x in ends if abs(x - raw_end) <= max_trail and x > peak_time]
-        if cand:
-            # Prefer finishing the sentence over cutting it short
-            best_end = max(cand)
+    # 2. Start: closest natural start to (peak - before), within a window
+    want_start = max(0.0, peak_time - before)
+    starts, _ = _sentence_marks(words, max(0.0, want_start - 8.0), max(0.0, peak_time - 4.0))
+    if starts:
+        start = min(starts, key=lambda c: abs(c[0] - want_start) - 0.8 * c[1])[0]
+    else:
+        start = want_start
 
-    best_start = max(0.0, best_start)
-    best_end = min(stream_duration, best_end)
-    if best_end - best_start < min_length:
-        best_end = min(stream_duration, best_start + min_length)
-        if best_end - best_start < min_length:
-            best_start = max(0.0, best_end - min_length)
-    if best_end - best_start > max_length:
-        # Keep the payoff: trim setup from the front, never the reaction at the end
-        best_start = best_end - max_length
+    # 3. End: first natural end after the reaction settles
+    _, ends = _sentence_marks(words, max(peak_time + 3.0, settle - 3.0), min(stream_duration, peak_time + after + 8.0))
+    if ends:
+        after_settle = [c for c in ends if c[0] >= settle - 1.0]
+        end = (after_settle[0] if after_settle else max(ends, key=lambda c: c[1]))[0]
+    else:
+        end = settle + 1.0
 
-    return round(best_start, 2), round(best_end, 2)
+    start = max(0.0, start)
+    end = min(stream_duration, end)
+
+    # 4. Length limits, still landing on natural points where possible
+    if end - start < min_length:
+        _, more = _sentence_marks(words, start + min_length, min(stream_duration, start + max_length))
+        end = more[0][0] if more else min(stream_duration, start + min_length)
+        if end - start < min_length:
+            start = max(0.0, end - min_length)
+    if end - start > max_length:
+        # Keep the payoff: cut setup from the front, at a sentence start if there is one
+        later, _ = _sentence_marks(words, end - max_length, peak_time - 2.0)
+        start = later[0][0] if later else end - max_length
+        if end - start > max_length:
+            start = end - max_length
+
+    return round(start, 2), round(end, 2)
 
 
 def dedupe_moments(

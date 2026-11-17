@@ -218,3 +218,15 @@ All test suites were executed on the target Windows 11 machine (HP Omen 16, RTX 
 - Hype curve saved per VOD (`downloads/<vod>/hype_curve.json`) for the review UI.
 - New web UI: `server.py` (FastAPI) + `web/` (no build step), `start_studio.bat`.
 - UI settings are saved to `config/user_overrides.yaml` so `config/clipper.yaml` is never rewritten.
+
+## Real-run fixes (first test on a real YouTube stream)
+
+Problems found on the first real run and what changed:
+
+- **No sound in clips.** Each clip now takes its sound from the full-stream audio that was already downloaded (the same audio Whisper heard and the Review page plays). The section's own sound is only used to line the picture up, so picture, sound and captions stay in sync. QC now **fails** a clip with no sound (it used to count silence as a pass).
+- **Fake-looking progress.** Transcription reports real progress ("12:05 of 41:30 of audio done · 35x realtime"). Each step bar fills with its own %, only finished steps are ticked, and the time left is per step, worked out from how fast that step is actually going. Rendering shows live % from ffmpeg. Whisper runs batched on the GPU (much faster).
+- **Only 1 moment found.** The combined hype curve is re-scored against its own baseline before picking (averaging the signals shrank every spike below the old threshold). Peaks are picked strongest-first with spacing between them. Auto now looks for about one moment per 5 minutes of stream and always offers a few (weaker ones are marked "maybe"). The YouTube replay graph can no longer decide everything on its own.
+- **YouTube chat was always 0.** The chat replay download was killed after 60 seconds; long streams need minutes. It now runs in the background during the audio download and Whisper, and partial chat is used if it is cut short.
+- **Clips felt "cut into".** Starts and ends are chosen on words: a clip starts where a sentence starts (after a full stop or a pause) and ends at the end of a sentence after the reaction dies down, with a little room for the laugh. Short audio fades remove clicks.
+- **Hook "Yeah".** Filler lines are never used as the hook; if nothing good was said, there is no hook. Long hooks and caption lines wrap to fit the frame.
+- **Wrong layout on IRL streams.** Each clip is classed as game + facecam, game only, IRL/camera, or just chatting. A split is only used for a facecam that sits still near an edge. IRL clips get a 9:16 crop that follows the main person. New run has a Stream type picker to force it, and Clips has a "Follow" layout.

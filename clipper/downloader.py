@@ -326,6 +326,7 @@ def download_audio_and_chat(
     output_dir: str = "downloads",
     job_id: Optional[str] = None,
     progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    skip_youtube_chat: bool = False,
 ) -> Tuple[str, Optional[str], str]:
     """Phase 1: Download AUDIO ONLY first, plus chat.
 
@@ -506,32 +507,57 @@ def download_audio_and_chat(
             except Exception as e:
                 logger.debug(f"Could not retrieve YouTube heatmap: {e}")
 
-        # Download Chat
+        # Download Chat (callers that run it in the background pass skip_youtube_chat=True)
         if os.path.isfile(chat_dest) and os.path.getsize(chat_dest) > 100:
             final_chat = chat_dest
-        else:
-            raw_chat_prefix = os.path.join(vod_dir, "raw_chat")
-            chat_cmd = get_ytdlp_cmd(input_source) + [
-                "--skip-download",
-                "--write-subs",
-                "--sub-langs", "live_chat",
-                "-o", raw_chat_prefix,
-                input_source
-            ]
-            try:
-                run_tracked_command(chat_cmd, job_id=job_id, timeout=60)
-            except Exception as e:
-                logger.info(f"YouTube chat not available or skipped: {e}")
-
-            raw_file = raw_chat_prefix + ".live_chat.json"
-            if os.path.isfile(raw_file):
-                comments = parse_youtube_live_chat(raw_file)
-                if comments:
-                    with open(chat_dest, "w", encoding="utf-8") as cf:
-                        json.dump({"comments": comments}, cf, indent=2)
-                    final_chat = chat_dest
+        elif not skip_youtube_chat:
+            final_chat = fetch_youtube_chat(input_source, vod_dir, job_id=job_id)
 
     return audio_dest, final_chat, vod_id
+
+
+
+def fetch_youtube_chat(
+    input_source: str,
+    vod_dir: str,
+    job_id: Optional[str] = None,
+    timeout: float = 1800.0,
+) -> Optional[str]:
+    """Download the YouTube live-chat replay and convert it to chat.json.
+
+    A long stream's chat replay takes minutes to fetch (it comes in small pieces), so this
+    has a long timeout and is meant to run in a background thread while the audio downloads
+    and Whisper runs. The old 60s timeout killed it on every real stream, which is why chat
+    was always 0. If it is cut short, whatever arrived so far (the .part file) is used.
+    """
+    chat_dest = os.path.join(vod_dir, "chat.json")
+    if os.path.isfile(chat_dest) and os.path.getsize(chat_dest) > 100:
+        return chat_dest
+    raw_chat_prefix = os.path.join(vod_dir, "raw_chat")
+    chat_cmd = get_ytdlp_cmd(input_source) + [
+        "--skip-download",
+        "--write-subs",
+        "--sub-langs", "live_chat",
+        "--newline",
+        "-o", raw_chat_prefix,
+        input_source,
+    ]
+    try:
+        run_tracked_command(chat_cmd, job_id=job_id, timeout=timeout)
+    except Exception as e:
+        logger.info(f"YouTube chat replay download stopped early or unavailable: {e}")
+
+    raw_file = raw_chat_prefix + ".live_chat.json"
+    for cand in (raw_file, raw_file + ".part"):
+        if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+            comments = parse_youtube_live_chat(cand)
+            if comments:
+                with open(chat_dest, "w", encoding="utf-8") as cf:
+                    json.dump({"comments": comments}, cf)
+                logger.info(f"YouTube chat ready: {len(comments)} messages ({os.path.basename(cand)})")
+                return chat_dest
+    logger.info("No YouTube chat replay available for this video.")
+    return None
 
 
 def format_section_timestamp(seconds: float) -> str:
@@ -550,6 +576,7 @@ def download_video_section(
     output_dir: str = "downloads",
     padding_seconds: Optional[float] = None,
     job_id: Optional[str] = None,
+    progress_cb: Optional[Callable[[float], None]] = None,
 ) -> Tuple[str, float]:
     """Phase 1: Download ONLY the required video section for a selected moment with padding.
 
@@ -638,10 +665,18 @@ def download_video_section(
         "--force-keyframes-at-cuts",
         "-f", format_selector,
         "--merge-output-format", "mp4",
+        "--newline",
         "-o", section_dest,
         input_source
     ]
-    ret = run_tracked_command(cmd, job_id=job_id)
+
+    def on_line(line: str):
+        if progress_cb:
+            m = re.search(r"\[download\]\s+([\d.]+)%", line)
+            if m:
+                progress_cb(min(1.0, float(m.group(1)) / 100.0))
+
+    ret = run_tracked_command(cmd, job_id=job_id, line_callback=on_line)
     if ret != 0:
         raise RuntimeError(f"yt-dlp section download failed with code {ret}")
 

@@ -7,6 +7,7 @@ from typing import Any, Dict
 DEFAULT_CONFIG: Dict[str, Any] = {
     "audio": {
         "whisper_model": "large-v3",
+        "whisper_batch_size": 16,
         "vad_filter": True,
         "section_padding_seconds": 3.0,
     },
@@ -46,6 +47,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "presence_threshold": 0.60,
         "box_padding": 1.0,
         "fullscreen_face_ratio": 0.22,
+        "facecam_max_drift": 0.03,
         "gameplay_aspect": "4:3",
         "split_facecam_height": 640,
         "gameplay_blur_background": True,

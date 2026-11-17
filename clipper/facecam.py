@@ -386,6 +386,8 @@ def detect_facecam(
         return {
             "found": False,
             "layout": "gameplay",
+            "stream_type": "gaming",
+            "track": [],
             "presence_ratio": 0.0,
             "face_box": None,
             "padded_box": None,
@@ -397,25 +399,53 @@ def detect_facecam(
 
     cluster_count = min(cluster["count"], total_samples)
     presence_ratio = round(cluster_count / max(1, total_samples), 3)
-    found = presence_ratio >= thresh
 
     med_box = cluster["median_box"]
     padded_box = expand_box_with_padding(med_box, frame_w, frame_h, padding)
-    layout = "split" if found else "gameplay"
-    # A face that fills a big part of the frame is a full-screen cam (Just Chatting /
-    # reaction), not a corner facecam: splitting would show the same picture twice.
+
+    # How still is the main face? A facecam overlay sits in one place; a person filmed by a
+    # camera (IRL) moves around the frame.
+    cxs = np.array([b[1][0] + b[1][2] / 2.0 for b in cluster["boxes"]], dtype=np.float32)
+    cys = np.array([b[1][1] + b[1][3] / 2.0 for b in cluster["boxes"]], dtype=np.float32)
+    drift = float(max(np.std(cxs) / frame_w, np.std(cys) / frame_h)) if len(cxs) > 1 else 0.0
+    # Frames where faces show up OUTSIDE the main cluster (other people, moving camera)
+    cluster_keys = {(round(t, 2), tuple(b)) for t, b in cluster["boxes"]}
+    other_times = {round(t, 2) for t, b in all_detections if (round(t, 2), tuple(b)) not in cluster_keys}
+    other_ratio = len(other_times) / max(1, total_samples)
+    any_face_ratio = frames_with_face / max(1, total_samples)
+
     big_face_ratio = float(fc_cfg.get("fullscreen_face_ratio", 0.22))
-    if found and med_box[3] >= frame_h * big_face_ratio:
-        layout = "face"
+    is_big = med_box[3] >= frame_h * big_face_ratio
+    stable = drift <= float(fc_cfg.get("facecam_max_drift", 0.03))
+
+    # Facecam overlays sit near an edge/corner of the screen, not in the middle of the scene
+    mcx = (med_box[0] + med_box[2] / 2.0) / frame_w
+    mcy = (med_box[1] + med_box[3] / 2.0) / frame_h
+    near_edge = mcx < 0.35 or mcx > 0.65 or mcy < 0.30 or mcy > 0.70
+
+    if presence_ratio >= thresh and stable and not is_big and near_edge and other_ratio < 0.35:
+        stream_type, layout, found = "gaming_facecam", "split", True
+    elif presence_ratio >= thresh and is_big and stable:
+        # One big face that stays put: Just Chatting / reaction cam filling the screen
+        stream_type, layout, found = "just_chatting", "face", True
+    elif any_face_ratio >= 0.30:
+        # People on camera, moving around or several of them: IRL / event stream.
+        # Follow the main person with a moving 9:16 crop instead of a split.
+        stream_type, layout, found = "irl", "irl", False
+    else:
+        stream_type, layout, found = "gaming", "gameplay", False
+
+    track = build_subject_track(all_detections, frame_w, frame_h) if layout in ("irl", "face") else []
 
     logger.info(
-        f"Facecam analysis: found={found}, presence={presence_ratio:.1%} ({cluster_count}/{total_samples}), "
-        f"layout={layout}, corner={cluster['corner']}, box={med_box}"
+        f"Stream type: {stream_type} (layout={layout}; main face presence={presence_ratio:.0%}, "
+        f"drift={drift:.3f}, other faces in {other_ratio:.0%} of frames, box={med_box})"
     )
 
     return {
         "found": found,
         "layout": layout,
+        "stream_type": stream_type,
         "presence_ratio": presence_ratio,
         "face_box": med_box,
         "padded_box": padded_box,
@@ -423,7 +453,50 @@ def detect_facecam(
         "frame_size": (frame_w, frame_h),
         "total_samples": total_samples,
         "detected_samples": cluster_count,
+        "drift": round(drift, 4),
+        "track": track,
     }
+
+
+def build_subject_track(
+    detections: List[Tuple[float, Tuple[int, int, int, int]]],
+    frame_w: int,
+    frame_h: int,
+) -> List[Tuple[float, float]]:
+    """Per-second horizontal centre of the main person, smoothed so the crop glides.
+
+    Picks the biggest face each sample (sticking with the previous subject when sizes are
+    close), fills gaps, then smooths and limits how fast the crop may pan.
+    """
+    by_t: Dict[float, List[Tuple[int, int, int, int]]] = {}
+    for t, b in detections:
+        by_t.setdefault(round(t, 2), []).append(b)
+    if not by_t:
+        return []
+    times = sorted(by_t)
+    xs: List[float] = []
+    prev_x: Optional[float] = None
+    for t in times:
+        boxes = by_t[t]
+        def key(b):
+            area = b[2] * b[3]
+            near = 0.0 if prev_x is None else abs((b[0] + b[2] / 2.0) - prev_x) / frame_w
+            return area * (1.0 - min(0.6, near))
+        b = max(boxes, key=key)
+        prev_x = b[0] + b[2] / 2.0
+        xs.append(prev_x)
+    arr = np.array(xs, dtype=np.float32)
+    if len(arr) >= 3:
+        k = min(5, len(arr) | 1)
+        pad = k // 2
+        arr = np.convolve(np.pad(arr, pad, mode="edge"), np.ones(k) / k, mode="valid")
+    # Limit pan speed to ~15% of the frame width per second
+    max_step = 0.15 * frame_w
+    for i in range(1, len(arr)):
+        dt = max(0.5, times[i] - times[i - 1])
+        step = max_step * dt
+        arr[i] = arr[i - 1] + float(np.clip(arr[i] - arr[i - 1], -step, step))
+    return [(float(t), round(float(x), 1)) for t, x in zip(times, arr)]
 
 
 def compute_gameplay_crop(

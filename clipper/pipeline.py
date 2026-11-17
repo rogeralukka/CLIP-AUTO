@@ -8,13 +8,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .captions import extract_hook_phrase, load_preset, make_ass
 from .config import load_config
-from .cutter import cut_rough_clip, render_vertical_clip
+from .cutter import attach_stream_audio, cut_rough_clip, render_vertical_clip
 from .detection import find_moments
 from .downloader import (
     download_audio_and_chat,
     download_video_section,
+    fetch_youtube_chat,
     get_vod_id,
     is_url,
+    is_youtube,
     prepare_input,
 )
 from .facecam import detect_facecam
@@ -48,6 +50,12 @@ def setup_logging(log_file: str = "clipper.log"):
 
 
 logger = setup_logging()
+
+
+def fmt_hms(sec: float) -> str:
+    sec = int(max(0, sec))
+    h, m, x = sec // 3600, sec % 3600 // 60, sec % 60
+    return f"{h}:{m:02d}:{x:02d}" if h else f"{m}:{x:02d}"
 
 
 def detect_pipeline_moments(
@@ -103,7 +111,25 @@ def detect_pipeline_moments(
             progress_callback("download", 18, f"Chat: {msg}", info)
 
     if progress_callback:
-        progress_callback("download", 2, "Connecting to stream source (audio-first)...", {})
+        progress_callback("download", 2, "Connecting to stream source (audio-first)...", {"stage_pct": 0})
+
+    # YouTube chat replay takes minutes to fetch, so it runs in the background while the
+    # audio downloads and Whisper works, instead of blocking (or being killed after 60s).
+    chat_thread = None
+    chat_box: Dict[str, Any] = {}
+    if is_youtube(vod_input) and not chat_input:
+        import threading
+        yt_vod_dir = os.path.abspath(os.path.join(cache_dir, get_vod_id(vod_input)))
+        os.makedirs(yt_vod_dir, exist_ok=True)
+
+        def _chat_worker():
+            try:
+                chat_box["path"] = fetch_youtube_chat(vod_input, yt_vod_dir, job_id=job_id)
+            except Exception as e:
+                logger.info(f"Chat replay fetch failed: {e}")
+
+        chat_thread = threading.Thread(target=_chat_worker, daemon=True)
+        chat_thread.start()
 
     audio_path, resolved_chat_path, vod_id = download_audio_and_chat(
         vod_input,
@@ -111,6 +137,7 @@ def detect_pipeline_moments(
         output_dir=cache_dir,
         job_id=job_id,
         progress_callback=on_dl_progress,
+        skip_youtube_chat=chat_thread is not None,
     )
     check_cancelled_or_paused(job_id)
 
@@ -120,7 +147,20 @@ def detect_pipeline_moments(
 
     # 2. Transcribe Full Stream Audio ONCE
     if progress_callback:
-        progress_callback("transcribe", 20, "Transcribing stream audio (word timestamps + VAD)...", {})
+        progress_callback("transcribe", 15, "Loading Whisper model...", {"stage_pct": 0})
+
+    def on_tx_progress(done: float, total: float, elapsed: float):
+        check_cancelled_or_paused(job_id)
+        if not progress_callback or total <= 0:
+            return
+        frac = max(0.0, min(1.0, done / total))
+        speed = (done / elapsed) if elapsed > 1 else 0.0
+        extra = f" · {speed:.0f}x realtime" if speed > 0 else ""
+        progress_callback(
+            "transcribe", 15 + int(frac * 15),
+            f"Transcribing: {fmt_hms(done)} of {fmt_hms(total)} of audio done{extra}",
+            {"stage_pct": frac * 100.0},
+        )
 
     transcript_cache = os.path.join(cache_dir, vod_id, "transcript.json")
     effective_model = model or cfg.get("audio", {}).get("whisper_model", "large-v3")
@@ -130,11 +170,21 @@ def detect_pipeline_moments(
         use_cpu=cpu,
         output_json=transcript_cache,
         job_id=job_id,
+        progress_callback=on_tx_progress,
     )
     check_cancelled_or_paused(job_id)
 
+    if chat_thread is not None:
+        if chat_thread.is_alive() and progress_callback:
+            progress_callback("detect", 30, "Waiting for the chat replay to finish downloading...", {"stage_pct": 2})
+        chat_thread.join(timeout=900)
+        check_cancelled_or_paused(job_id)
+        resolved_chat_path = chat_box.get("path") or resolved_chat_path
+        if not resolved_chat_path:
+            log_job_message(job_id, "No chat replay for this video; using audio, speech and replay data.")
+
     if progress_callback:
-        progress_callback("detect", 28, "Loading chat data & analyzing hype signals...", {})
+        progress_callback("detect", 31, "Measuring loudness, speech and chat across the stream...", {"stage_pct": 10})
 
     # 3. Load Chat comments if available
     comments = None
@@ -174,6 +224,9 @@ def detect_pipeline_moments(
         vod_id=vod_id,
         min_clip_length=float(camp.get("min_clip_length") or 15.0),
         max_clip_length=float(camp.get("max_clip_length") or 60.0),
+        progress_cb=(lambda f: progress_callback(
+            "detect", 31 + int(f * 3), f"Measuring loudness across the stream: {f * 100:.0f}%",
+            {"stage_pct": 10 + f * 80})) if progress_callback else None,
     )
     check_cancelled_or_paused(job_id)
 
@@ -202,8 +255,8 @@ def detect_pipeline_moments(
         progress_callback(
             "detect",
             35,
-            f"Found {len(moments)} hype moments.",
-            {"count": len(moments)},
+            f"Found {len(moments)} moments.",
+            {"count": len(moments), "stage_pct": 100},
         )
 
     return audio_path, resolved_chat_path, moments
@@ -300,44 +353,16 @@ def render_pipeline_moments(
             })
             continue
 
-        step_base_pct = 35 + int(((i - 1) / total) * 60)
 
-        # Silence trimming: remove leading / trailing dead air >1s down to 0.3s
-        campaign_min = float(campaign.get("min_clip_length", campaign.get("min_length_seconds", 15.0))) if campaign else 15.0
-        words_in_vod: List[Dict[str, Any]] = []
-        if full_transcript_data and full_transcript_data.get("words"):
-            words_in_vod = [
-                w for w in full_transcript_data["words"]
-                if start_sec <= w["start"] <= end_sec
-            ]
-
-        if words_in_vod:
-            first_w_start = words_in_vod[0]["start"]
-            last_w_end = words_in_vod[-1]["end"]
-            new_start = start_sec
-            new_end = end_sec
-
-            if first_w_start - start_sec > 1.0:
-                new_start = max(start_sec, first_w_start - 0.3)
-            # No trailing trim: laughs/screams after the last word are often the payoff
-            # and Whisper does not transcribe them.
-
-            if (new_end - new_start) >= campaign_min:
-                if new_start != start_sec or new_end != end_sec:
-                    logger.info(
-                        f"Trimmed dead air for clip {i}: {start_sec:.1f}s-{end_sec:.1f}s -> {new_start:.1f}s-{new_end:.1f}s"
-                    )
-                    start_sec = round(new_start, 2)
-                    end_sec = round(new_end, 2)
+        def clip_step(frac: float, msg: str):
+            # frac = how far through THIS clip (0..1); reported as % of the whole render step
+            if progress_callback:
+                stage_pct = ((i - 1) + frac) / total * 100.0
+                progress_callback("render", 35 + int(stage_pct * 0.6), msg,
+                                  {"clip_index": i, "total": total, "stage_pct": stage_pct})
 
         # Step A: Download required video section (or cut from local video)
-        if progress_callback:
-            progress_callback(
-                "render",
-                step_base_pct,
-                f"Fetching video section: clip {i} of {total} ({start_sec}s -> {end_sec}s)",
-                {"clip_index": i, "total": total},
-            )
+        clip_step(0.0, f"Clip {i} of {total}: downloading the video for {start_sec:.0f}s-{end_sec:.0f}s")
 
         if not (os.path.isfile(rough_path) and os.path.getsize(rough_path) > 1024):
             dur = end_sec - start_sec
@@ -350,7 +375,19 @@ def render_pipeline_moments(
                     quality=moment_quality,
                     output_dir="downloads",
                     job_id=job_id,
+                    progress_cb=lambda f: clip_step(0.3 * f, f"Clip {i} of {total}: downloading video {f * 100:.0f}%"),
                 )
+                # Use the full-stream audio we already have (known good, matches the captions).
+                # Section downloads sometimes come back without sound.
+                stream_audio = m.get("audio_path") if isinstance(m, dict) else None
+                if stream_audio and os.path.isfile(stream_audio):
+                    clip_step(0.35, f"Clip {i} of {total}: lining up sound")
+                    fixed = os.path.splitext(sec_path)[0] + "_av.mp4"
+                    sec_path, delta = attach_stream_audio(sec_path, stream_audio, start_sec - offset, fixed, job_id=job_id)
+                    # If the section's picture starts `delta` s late, the moment sits `delta` s
+                    # earlier inside it; shifting the cut keeps picture, sound and captions together.
+                    offset = max(0.0, offset - delta)
+                clip_step(0.45, f"Clip {i} of {total}: cutting")
                 cut_rough_clip(sec_path, offset, offset + dur, rough_path, use_cpu=cpu, job_id=job_id)
             else:
                 # Local video or extracted video
@@ -370,13 +407,7 @@ def render_pipeline_moments(
             words = slice_transcript(full_transcript_data, start_sec, end_sec)
 
         if not words:
-            if progress_callback:
-                progress_callback(
-                    "transcribe",
-                    step_base_pct + int(20 / total),
-                    f"Transcribing fallback: clip {i} of {total}",
-                    {"clip_index": i, "total": total},
-                )
+            clip_step(0.5, f"Clip {i} of {total}: transcribing")
             words = transcribe_clip(
                 rough_path,
                 model_name=model,
@@ -388,12 +419,13 @@ def render_pipeline_moments(
         check_cancelled_or_paused(job_id)
 
         # Detect facecam and determine vertical layout
-        clip_layout = m.get("layout", "auto") if isinstance(m, dict) else "auto"
+        clip_step(0.55, f"Clip {i} of {total}: checking for facecam / people")
+        clip_layout = (m.get("layout") if isinstance(m, dict) else None) or "auto"
         facecam_info = None
-        if clip_layout in ("auto", "split", "face"):
+        if clip_layout in ("auto", "split", "face", "irl"):
             facecam_info = detect_facecam(rough_path)
             if clip_layout == "auto":
-                active_layout = "split" if facecam_info.get("found", False) else "gameplay"
+                active_layout = facecam_info.get("layout") or "gameplay"
             else:
                 active_layout = clip_layout
         else:
@@ -408,13 +440,7 @@ def render_pipeline_moments(
         make_ass(words, ass_path, preset=preset, layout=active_layout, hook_title=hook_title)
 
         # Step D: Render Vertical 9:16
-        if progress_callback:
-            progress_callback(
-                "render",
-                step_base_pct + int(40 / total),
-                f"Rendering: clip {i} of {total} (1080x1920 {active_layout})",
-                {"clip_index": i, "total": total},
-            )
+        clip_step(0.65, f"Clip {i} of {total}: rendering 9:16 ({active_layout})")
 
         render_vertical_clip(
             rough_path,
@@ -425,6 +451,7 @@ def render_pipeline_moments(
             job_id=job_id,
             layout=active_layout,
             facecam_info=facecam_info,
+            progress_cb=lambda f: clip_step(0.65 + 0.3 * f, f"Clip {i} of {total}: rendering 9:16 ({active_layout}) {f * 100:.0f}%"),
         )
         check_cancelled_or_paused(job_id)
 
@@ -505,13 +532,7 @@ def render_pipeline_moments(
         generated_clips.append(clip_dict)
         log_job_message(job_id, f"Finished rendering clip {i} of {total} ({os.path.basename(final_path)})")
 
-        if progress_callback:
-            progress_callback(
-                "render",
-                35 + int((i / total) * 60),
-                f"Finished clip {i} of {total}",
-                {"clip_index": i, "total": total},
-            )
+        clip_step(1.0, f"Finished clip {i} of {total}")
 
     return generated_clips
 
@@ -629,10 +650,10 @@ def rerender_clip(clip: Dict[str, Any], layout: Optional[str] = None, hook_title
         words = transcribe_clip(rough, use_cpu=cpu, cache_dir=clip_dir)
 
     facecam_info = clip.get("facecam")
-    if new_layout in ("auto", "split", "face") and not facecam_info:
+    if new_layout in ("auto", "split", "face", "irl") and not (facecam_info and "track" in facecam_info):
         facecam_info = detect_facecam(rough)
     if new_layout == "auto":
-        new_layout = "split" if (facecam_info or {}).get("found") else "gameplay"
+        new_layout = (facecam_info or {}).get("layout") or "gameplay"
 
     preset = load_preset(preset_name or clip.get("preset") or "classic_yellow")
     make_ass(words, ass, preset=preset, layout=new_layout, hook_title=new_hook or None)

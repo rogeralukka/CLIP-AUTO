@@ -50,7 +50,7 @@ class TestPhase5(unittest.TestCase):
                 content = f.read()
 
             self.assertIn("Style: Hook", content)
-            self.assertIn("UNBELIEVABLE CLUTCH", content)
+            self.assertIn("UNBELIEVABLE\\NCLUTCH", content)  # long hooks wrap to fit the frame
             self.assertIn("0:00:02.50", content)
 
     def test_loudnorm_filter_generation(self):

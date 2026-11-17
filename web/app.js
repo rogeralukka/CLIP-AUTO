@@ -72,6 +72,9 @@ async function renderNew() {
           <div class="seg acc" id="count">${["Auto", "3", "5", "8", "12"].map(v => `<button data-v="${v}" class="${(d.count || "5") === v ? "on" : ""}">${v}</button>`).join("")}</div></div>
         <div class="col"><span class="lbl">Sensitivity</span>
           <div class="seg acc" id="sens">${[["2.5", "Picky"], ["2.0", "Normal"], ["1.5", "Loose"]].map(([v, l]) => `<button data-v="${v}" class="${(d.sens || "2.0") === v ? "on" : ""}">${l}</button>`).join("")}</div></div>
+        <div class="col" style="grid-column:1/-1"><span class="lbl">Stream type</span>
+          <div class="seg acc" id="ltype">${[["auto", "Auto-detect"], ["split", "Game + facecam"], ["gameplay", "Game, no cam"], ["irl", "IRL / camera"], ["face", "Just chatting"]].map(([v, l]) => `<button data-v="${v}" class="${(d.ltype || "auto") === v ? "on" : ""}">${l}</button>`).join("")}</div>
+          <span class="muted small">Auto looks at each clip: a fixed corner cam gets the split layout, people on camera get a crop that follows them, plain gameplay gets the blurred fill.</span></div>
         <div class="col"><span class="lbl">Video quality</span><select id="quality">${["1080p", "720p", "480p"].map(q => `<option ${d.quality === q ? "selected" : ""}>${q}</option>`).join("")}</select></div>
         <div class="col"><span class="lbl">Options</span>
           <label class="row small"><span class="switch"><input type="checkbox" id="review" ${d.review === false ? "" : "checked"}><span></span></span>Review moments before rendering</label>
@@ -84,7 +87,7 @@ async function renderNew() {
       <div class="card small muted">
         <span class="lbl">How a run works</span>
         <ol style="padding-left:18px;margin-top:8px;line-height:1.9">
-          <li>Downloads <b style="color:var(--tx)">audio only</b> + chat (a 4h stream is a few hundred MB)</li>
+          <li>Downloads <b style="color:var(--tx)">audio only</b> (a 4h stream is a few hundred MB); chat replay downloads alongside</li>
           <li>Transcribes the whole stream on your GPU</li>
           <li>Builds a hype curve from chat speed, chat words, loudness, speech and replays</li>
           <li>${S.sys && S.sys.llm.enabled ? "AI judge picks the best ones and writes hooks" : "Optional: turn on the AI judge in Settings"}</li>
@@ -105,7 +108,7 @@ async function renderNew() {
     $("#rules").innerHTML = c ? `<b style="color:var(--tx)">${esc(c.name)}</b>${c.streamer ? " · " + esc(c.streamer) : ""}\nLength: ${c.min_clip_length || 15}–${c.max_clip_length || 60}s\nPlatforms: ${esc((c.allowed_upload_platforms || []).join(", ") || "any")}\nHashtags: ${esc((c.required_hashtags || []).join(" ") || "none")}\n${c.required_disclosure ? "Disclosure: " + esc(c.required_disclosure) + "\n" : ""}${c.rules_note ? "\n" + esc(c.rules_note) : ""}` : "Pick a campaign to see its rules here.";
   };
   $("#camp").onchange = showRules; showRules();
-  $$("#count button, #sens button").forEach(b => b.onclick = () => { $$("button", b.parentNode).forEach(x => x.classList.remove("on")); b.classList.add("on"); d[b.parentNode.id === "count" ? "count" : "sens"] = b.dataset.v; });
+  $$("#count button, #sens button, #ltype button").forEach(b => b.onclick = () => { $$("button", b.parentNode).forEach(x => x.classList.remove("on")); b.classList.add("on"); d[{ count: "count", sens: "sens", ltype: "ltype" }[b.parentNode.id]] = b.dataset.v; });
   $("#preset").onchange = e => d.preset = e.target.value; $("#quality").onchange = e => d.quality = e.target.value;
   $("#review").onchange = e => d.review = e.target.checked; $("#cpu").onchange = e => d.cpu = e.target.checked;
   $("#go").onclick = async () => {
@@ -113,7 +116,7 @@ async function renderNew() {
     if (!ls.length) return toast("Paste at least one link", true);
     const count = $("#count .on").dataset.v;
     try {
-      await api("/api/jobs", { method: "POST", body: { links: ls, campaign_id: $("#camp").value || null, quality: $("#quality").value, top: count === "Auto" ? null : +count, sensitivity: +$("#sens .on").dataset.v, review: $("#review").checked, preset: $("#preset").value || null, cpu: $("#cpu").checked } });
+      await api("/api/jobs", { method: "POST", body: { links: ls, campaign_id: $("#camp").value || null, quality: $("#quality").value, top: count === "Auto" ? null : +count, sensitivity: +$("#sens .on").dataset.v, review: $("#review").checked, preset: $("#preset").value || null, cpu: $("#cpu").checked, layout: $("#ltype .on").dataset.v } });
       d.links = ""; toast(`Queued ${ls.length} run${ls.length > 1 ? "s" : ""}`); location.hash = "#queue";
     } catch (e) { toast(e.message, true); }
   };
@@ -124,6 +127,17 @@ function statusChip(j) {
   const m = { RUNNING: "ac", QUEUED: "", PAUSED: "warn", AWAITING_SELECTION: "hot", COMPLETED: "ok", FAILED: "bad", CANCELLED: "bad", INTERRUPTED: "warn" };
   const label = j.status === "AWAITING_SELECTION" ? "Needs review" : j.status.toLowerCase();
   return `<span class="chip ${m[j.status] || ""}">${label}</span>`;
+}
+function progressLine(j) {
+  const now = Date.now() / 1000;
+  const inStep = j.stage_started ? now - j.stage_started : 0;
+  const quiet = j.heartbeat ? now - j.heartbeat : 0;
+  const parts = [`<b style="color:var(--ac)">${esc(j.stage_details || j.status_message || "Working")}</b>`];
+  if (inStep > 0) parts.push(`${fmt(inStep)} in this step`);
+  if (j.eta_seconds) parts.push(`about ${fmt(j.eta_seconds)} left in this step`);
+  else if (inStep > 0) parts.push(`working out time left…`);
+  if (quiet > 90) parts.push(`<span style="color:var(--warn)">no update for ${fmt(quiet)}</span>`);
+  return `<span data-live="${j.id}">${parts.join(" · ")}</span>`;
 }
 function renderQueue() {
   const jobs = S.jobs;
@@ -144,8 +158,14 @@ function renderQueue() {
       <div><div class="row">${statusChip(j)}<span class="chip">${platformOf(j.vod_input)}</span>${camp}<span class="muted small mono">#${j.id} · ${esc(j.created_at || "")}</span></div>
         <div class="ttl" style="margin-top:8px" title="${esc(j.vod_input)}">${esc(j.vod_input)}</div></div>
       <div class="row">${act.join("")}</div>
-      <div class="steps">${STAGES.map(([k, l]) => `<div class="step ${st[k] === "DONE" ? "done" : st[k] === "RUNNING" || (j.current_stage === k && j.status === "RUNNING") ? "run" : ""}">${l}</div>`).join("")}</div>
-      <div class="detail">${j.status === "RUNNING" ? `<b style="color:var(--ac)">${j.progress || 0}%</b> · ` : ""}${esc(j.error || j.stage_details || j.status_message || "")}${j.eta_seconds && j.status === "RUNNING" ? ` · ~${fmt(j.eta_seconds)} left` : ""}</div>
+      <div class="steps">${STAGES.map(([k, l], n) => {
+        const state = st[k] || "WAITING";
+        const running = state === "RUNNING" && j.status === "RUNNING";
+        const pct = state === "DONE" ? 100 : running ? (j.stage_pct || 0) : 0;
+        const tail = running ? ` · ${Math.floor(pct)}%` : state === "SKIPPED" ? " · skipped" : state === "DONE" ? " ✓" : "";
+        return `<div class="step ${state === "DONE" ? "done" : running ? "run" : state === "SKIPPED" ? "skip" : ""}"><div class="bar"><i style="width:${pct}%"></i></div>${l}${tail}</div>`;
+      }).join("")}</div>
+      <div class="detail">${j.status === "RUNNING" ? progressLine(j) : esc(j.error || j.stage_details || j.status_message || "")}</div>
     </div>`;
   }).join("") : `<div class="empty"><b>Nothing queued</b>Start a run and it will show up here.</div>`}`;
   main.innerHTML = html;
@@ -169,7 +189,9 @@ async function renderReview() {
   const job = S.jobs.find(j => j.id === S.arg);
   if (!job) { main.innerHTML = `<div class="empty"><b>Run not found</b></div>`; return; }
   const moments = (job.detected_moments || []).map(m => ({ ...m }));
-  const sel = new Set(job.selected_indices || moments.map((m, i) => i).filter(i => i < 8));
+  // Default: pre-select the 8 strongest moments (not just the first 8 in time order)
+  const ranked = moments.map((m, i) => i).sort((a, b) => (moments[b].llm_score ?? moments[b].score ?? 0) - (moments[a].llm_score ?? moments[a].score ?? 0));
+  const sel = new Set(job.selected_indices || ranked.filter(i => !moments[i].weak).slice(0, 8));
   const curve = await api(`/api/jobs/${job.id}/curve`).catch(() => ({ composite: [] }));
   const audio = new Audio(); let playing = -1;
   const score = m => (m.blended_score ?? m.score ?? 0);
@@ -208,6 +230,7 @@ async function renderReview() {
         <div class="num" data-tog="${i}">${i + 1}</div>
         <div style="min-width:0">
           <div class="row"><span class="tm">${fmt(m.start)} → ${fmt(m.end)}</span><span class="chip">${Math.round(m.end - m.start)}s</span>
+            ${m.weak ? `<span class="chip" title="Below your sensitivity setting; shown so you have options">maybe</span>` : ""}
             ${m.llm_score != null ? `<span class="chip ac">AI ${m.llm_score}/10</span>` : ""}
             <button class="btn sm" data-play="${i}">${playing === i ? "■ Stop" : "▶ Listen"}</button>
             <span class="nudge"><span class="muted small">start</span><button class="btn sm ghost" data-n="${i},start,-5">−5</button><button class="btn sm ghost" data-n="${i},start,5">+5</button>
@@ -267,7 +290,7 @@ function renderClips() {
     <select id="jobpick" style="width:auto;max-width:280px">${jobs.map(j => `<option value="${j.id}" ${j.id === job.id ? "selected" : ""}>#${j.id} · ${j.clips.length} clips · ${esc((j.campaign || {}).name || platformOf(j.vod_input))}</option>`).join("")}</select>
     <div class="seg" id="filt">${["all", "pending", "kept", "rejected"].map(f => `<button data-f="${f}" class="${S.clipFilter === f ? "on" : ""}">${f}</button>`).join("")}</div>
     <button class="btn pri" id="export" ${kept ? "" : "disabled"}>Export ${kept} kept</button></div>
-  <p class="muted small" style="margin:-8px 0 16px"><span class="kbd">J</span>/<span class="kbd">K</span> move · <span class="kbd">Space</span> play · <span class="kbd">Y</span> keep · <span class="kbd">N</span> reject · <span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span> layout</p>
+  <p class="muted small" style="margin:-8px 0 16px"><span class="kbd">J</span>/<span class="kbd">K</span> move · <span class="kbd">Space</span> play · <span class="kbd">Y</span> keep · <span class="kbd">N</span> reject · <span class="kbd">1</span>–<span class="kbd">4</span> layout</p>
   <div class="clips" id="cliplist"></div>`;
   $("#jobpick").onchange = e => location.hash = "#clips/" + e.target.value;
   $$("#filt button").forEach(b => b.onclick = () => { S.clipFilter = b.dataset.f; renderClips(); });
@@ -287,11 +310,11 @@ function drawClips(job) {
         <div class="ov">${qc.status ? `<span class="chip ${qcCls}" title="${esc((qc.flags || []).join("\n"))}">QC ${qc.status}</span>` : ""}${c.is_flagged ? `<span class="chip bad" title="${esc((c.flagged_words || []).join(", "))}">Risk words</span>` : ""}${qc.possible_music ? `<span class="chip warn">Music?</span>` : ""}</div>
         ${c.busy ? `<div class="busy"><div class="spin"></div>Re-rendering…</div>` : ""}</div>
       <div class="body">
-        <div class="row" style="justify-content:space-between"><span class="mono small muted">${fmt(c.start_seconds || 0)} · ${Math.round(c.duration || 0)}s</span><span class="chip">${(+(c.hype_score || 0)).toFixed(1)} hype</span></div>
+        <div class="row" style="justify-content:space-between"><span class="mono small muted">${fmt(c.start_seconds || 0)} · ${Math.round(c.duration || 0)}s${(c.facecam || {}).stream_type ? " · " + esc({ gaming_facecam: "game + cam", gaming: "game", irl: "IRL", just_chatting: "chatting" }[c.facecam.stream_type] || c.facecam.stream_type) : ""}</span><span class="chip">${(+(c.hype_score || 0)).toFixed(1)} hype</span></div>
         ${(qc.flags || []).length ? `<div class="small" style="color:var(--warn)">${(qc.flags || []).map(esc).join("<br>")}</div>` : ""}
         ${c.error ? `<div class="small" style="color:var(--bad)">${esc(c.error)}</div>` : ""}
         <div class="col"><span class="lbl">Hook title</span><input type="text" data-hook value="${esc(c.hook_title || "")}" maxlength="60" placeholder="No hook"></div>
-        <div class="row" style="justify-content:space-between"><div class="seg" data-lay>${[["split", "Split"], ["gameplay", "Gameplay"], ["face", "Face"]].map(([v, l]) => `<button data-v="${v}" class="${lay === v ? "on" : ""}">${l}</button>`).join("")}</div>
+        <div class="row" style="justify-content:space-between"><div class="seg" data-lay>${[["split", "Split"], ["gameplay", "Gameplay"], ["irl", "Follow"], ["face", "Face"]].map(([v, l]) => `<button data-v="${v}" class="${lay === v ? "on" : ""}">${l}</button>`).join("")}</div>
           <button class="btn sm" data-rr ${c.busy ? "disabled" : ""}>Re-render</button></div>
         <div class="acts"><button class="btn keep ${c.status === "KEPT" ? "on" : ""}" data-st="KEPT">✓ Keep</button><button class="btn rej ${c.status === "REJECTED" ? "on" : ""}" data-st="REJECTED">✕ Reject</button></div>
         <div class="col"><div class="tabs" data-tabs>${[["youtube", "Shorts"], ["tiktok", "TikTok"], ["reels", "Reels"], ["x", "X"]].map(([k, l], t) => `<button class="btn sm ${t ? "ghost" : ""}" data-tab="${k}">${l}</button>`).join("")}</div>
@@ -316,7 +339,7 @@ function drawClips(job) {
     if (e.key === " ") { e.preventDefault(); const v = $("video", el); v.paused ? v.play() : v.pause(); }
     if (e.key === "y") $('[data-st="KEPT"]', el).click();
     if (e.key === "n") $('[data-st="REJECTED"]', el).click();
-    if ("123".includes(e.key)) { $$("[data-lay] button", el)[+e.key - 1].click(); }
+    if ("1234".includes(e.key)) { $$("[data-lay] button", el)[+e.key - 1].click(); }
   };
 }
 function capText(p, tab) {

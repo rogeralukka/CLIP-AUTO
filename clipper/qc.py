@@ -137,17 +137,20 @@ def perform_qc_check(
     lufs_tolerance = qc_cfg.get("loudness_tolerance_lu", 2.0)
 
     # 1. Duration check
-    campaign_min = float(campaign.get("min_length_seconds", 15.0)) if campaign else 15.0
-    campaign_max = float(campaign.get("max_length_seconds", 90.0)) if campaign else 90.0
+    camp = campaign or {}
+    campaign_min = float(camp.get("min_clip_length") or camp.get("min_length_seconds") or 15.0)
+    campaign_max = float(camp.get("max_clip_length") or camp.get("max_length_seconds") or 90.0)
     duration_ok = (campaign_min - 0.5) <= duration <= (campaign_max + 0.5)
 
     # 2. Loudness check
+    # A clip with no sound must never pass QC (this used to count silence as "OK").
     measured_lufs = measure_clip_loudness(clip_path)
-    if measured_lufs is not None and measured_lufs > -70.0:
+    audio_ok = measured_lufs is not None and measured_lufs > -60.0
+    if audio_ok:
         loudness_ok = abs(measured_lufs - target_lufs) <= lufs_tolerance
     else:
-        loudness_ok = True  # Silent or measurement skipped
-        measured_lufs = target_lufs
+        loudness_ok = False
+        measured_lufs = -99.0
 
     # 3. Black frames check (ignore black frames right at start <0.3s or end >dur-0.3s)
     black_periods = detect_black_frames(clip_path, min_duration=0.5)
@@ -180,7 +183,9 @@ def perform_qc_check(
     flags: List[str] = []
     if not duration_ok:
         flags.append(f"Duration {duration:.1f}s outside bounds ({campaign_min}s-{campaign_max}s)")
-    if not loudness_ok:
+    if not audio_ok:
+        flags.append("No sound in the clip")
+    elif not loudness_ok:
         flags.append(f"Loudness {measured_lufs:.1f} LUFS outside target ({target_lufs} +/- {lufs_tolerance} LU)")
     if not black_frames_ok:
         flags.append(f"Detected {len(mid_black)} black frame sequence(s)")
@@ -191,7 +196,7 @@ def perform_qc_check(
     if possible_music:
         flags.append("Possible copyrighted music / no speech detected during loud audio")
 
-    if not duration_ok or not black_frames_ok or not frozen_frames_ok:
+    if not audio_ok or not duration_ok or not black_frames_ok or not frozen_frames_ok:
         status = "FAIL"
     elif flags:
         status = "WARN"
@@ -202,6 +207,7 @@ def perform_qc_check(
         "status": status,
         "duration_ok": duration_ok,
         "loudness_ok": loudness_ok,
+        "audio_ok": audio_ok,
         "black_frames_ok": black_frames_ok,
         "frozen_frames_ok": frozen_frames_ok,
         "facecam_present": facecam_ok,

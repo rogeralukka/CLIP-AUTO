@@ -4,6 +4,7 @@
 audio:
   whisper_model: "large-v3"       # large-v3, large-v3-turbo, distil-large-v3
   vad_filter: true
+  whisper_batch_size: 16         # GPU batched transcription (much faster). Set 1 to turn off
   section_padding_seconds: 3.0   # Padding around extracted video clips
 
 signals:
@@ -40,6 +41,7 @@ facecam:
   presence_threshold: 0.60       # Use split layout if face presence >= 60%
   box_padding: 1.0               # Expansion around the face (1.0 = webcam-sized: head + shoulders)
   fullscreen_face_ratio: 0.22    # Face taller than this share of the frame => full-screen cam ("face" layout)
+  facecam_max_drift: 0.03        # A corner facecam barely moves; a face that wanders more is a person on camera (IRL)
   split_facecam_height: 640      # Height of facecam area in 1080x1920 split layout
   gameplay_blur_background: true # Blur background for gameplay fit-to-width
   gameplay_aspect: "4:3"         # Center-crop gameplay to this before fitting ("16:9" = no crop, "4:3", "1:1")

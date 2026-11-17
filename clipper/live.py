@@ -273,10 +273,10 @@ class LiveStreamClipper:
 
             # Facecam layout
             facecam = detect_facecam(rough_path)
-            layout = "split" if facecam.get("found") else "gameplay"
+            layout = facecam.get("layout") or ("split" if facecam.get("found") else "gameplay")
 
             # Hook title & ASS
-            hook_title = extract_hook_phrase(words) or f"Live Clip {ts_str}"
+            hook_title = extract_hook_phrase(words)
             make_ass(words, ass_path, preset=preset, layout=layout, hook_title=hook_title)
 
             # Render vertical 9:16

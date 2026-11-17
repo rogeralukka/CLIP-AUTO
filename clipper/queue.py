@@ -134,6 +134,7 @@ def add_job(
     use_cpu: bool = False,
     auto_render: bool = False,
     is_dev_test: bool = False,
+    layout: str = "auto",
 ) -> str:
     """Add a new clipping job to the queue with quality choice."""
     job_id = str(uuid.uuid4())[:8]
@@ -164,17 +165,12 @@ def add_job(
         "preset": effective_preset,
         "use_cpu": use_cpu,
         "auto_render": auto_render,
+        "layout": (layout or "auto").lower(),
         "status": "QUEUED",
         "progress": 0,
         "status_message": "Waiting in queue...",
         "current_stage": "download",
-        "stages": {
-            "download": "WAITING",
-            "detect": "WAITING",
-            "selection": "WAITING",
-            "transcribe": "WAITING",
-            "render": "WAITING",
-        },
+        "stages": {k: "WAITING" for k in ("download", "transcribe", "detect", "selection", "render")},
         "stage_details": "Waiting in queue...",
         "heartbeat": time.time(),
         "start_time": None,
@@ -305,14 +301,16 @@ def confirm_render_moments(
         if updated_moments is not None:
             job["detected_moments"] = updated_moments
         job["selected_indices"] = selected_indices
-        job["stages"]["selection"] = "DONE"
-        job["stages"]["transcribe"] = "WAITING"
-        job["stages"]["render"] = "WAITING"
+        job["stages"] = {"download": "DONE", "transcribe": "DONE", "detect": "DONE",
+                         "selection": "DONE", "render": "WAITING"}
         job["status"] = "QUEUED"
         job["stage_details"] = f"Approved {len(selected_indices)} moments. Queued for rendering..."
 
     mutate_job(job_id, _confirm)
     ensure_worker_running()
+
+
+STAGE_ORDER = ["download", "transcribe", "detect", "selection", "render"]
 
 
 def update_job_progress(
@@ -322,40 +320,46 @@ def update_job_progress(
     message: str,
     meta: Optional[Dict[str, Any]] = None,
 ):
-    """Update job stage, progress percentage, ETA, and heartbeat timestamp."""
+    """Update stage, real per-stage progress, per-stage ETA and heartbeat.
+
+    Only steps that have actually finished are marked DONE; the current one is RUNNING with
+    its own 0-100% (stage_pct). The ETA is for the current step, worked out from how fast
+    that step is really moving, and only shown once there is enough to go on.
+    """
     now = time.time()
+    meta = meta or {}
 
     def _update(job):
+        if stage not in STAGE_ORDER:
+            return
+        if job.get("current_stage") != stage or not job.get("stage_started"):
+            job["stage_started"] = now
+            job["stage_pct"] = 0.0
         job["current_stage"] = stage
         job["progress"] = min(100, max(job.get("progress", 0), progress))
         job["stage_details"] = message
         job["status_message"] = message
         job["heartbeat"] = now
 
-        stages = job.get("stages", {})
-        if stage == "download":
-            stages["download"] = "RUNNING"
-        elif stage == "detect":
-            stages["download"] = "DONE"
-            stages["detect"] = "RUNNING"
-        elif stage == "selection":
-            stages["detect"] = "DONE"
-            stages["selection"] = "RUNNING"
-        elif stage in ("transcribe", "render"):
-            stages["detect"] = "DONE"
-            stages["selection"] = "DONE"
-            if stage == "transcribe":
-                stages["transcribe"] = "RUNNING"
-            else:
-                stages["transcribe"] = "DONE"
-                stages["render"] = "RUNNING"
+        if "stage_pct" in meta:
+            job["stage_pct"] = round(max(0.0, min(100.0, float(meta["stage_pct"]))), 1)
+
+        cur = STAGE_ORDER.index(stage)
+        stages = {}
+        for k in STAGE_ORDER:
+            i = STAGE_ORDER.index(k)
+            stages[k] = "DONE" if i < cur else ("RUNNING" if i == cur else "WAITING")
+        # Review is skipped when the run renders automatically
+        if job.get("auto_render") and stage == "render":
+            stages["selection"] = "SKIPPED"
         job["stages"] = stages
 
-        start_time = job.get("start_time")
-        if start_time and job["progress"] > 5 and job["progress"] < 100:
-            elapsed = now - start_time
-            est_total = elapsed / (job["progress"] / 100.0)
-            job["eta_seconds"] = max(0, int(est_total - elapsed))
+        p = float(job.get("stage_pct") or 0.0)
+        elapsed = now - float(job.get("stage_started") or now)
+        if 3.0 <= p < 100.0 and elapsed >= 8.0:
+            job["eta_seconds"] = int(elapsed * (100.0 - p) / p)
+        else:
+            job["eta_seconds"] = None
 
     mutate_job(job_id, _update)
 
@@ -449,8 +453,10 @@ def _worker_loop():
                         j["detected_moments"] = moments
                         j["status"] = "AWAITING_SELECTION"
                         j["progress"] = 35
-                        j["stages"]["detect"] = "DONE"
-                        j["stages"]["selection"] = "RUNNING"
+                        j["stages"] = {"download": "DONE", "transcribe": "DONE", "detect": "DONE",
+                                       "selection": "RUNNING", "render": "WAITING"}
+                        j["current_stage"] = "selection"
+                        j["eta_seconds"] = None
                         j["status_message"] = f"Found {len(moments)} hype moments. Review & select moments."
                         j["stage_details"] = f"Awaiting review of {len(moments)} moments."
                     mutate_job(next_job_id, _pause_sel)
@@ -473,6 +479,12 @@ def _worker_loop():
                 ]
             else:
                 moments_to_render = detected_moments
+
+            # Stream type chosen on the New run page applies to every clip that has no
+            # layout of its own yet
+            job_layout = (current_job_data.get("layout") or "auto").lower()
+            if job_layout != "auto":
+                moments_to_render = [dict(m, layout=m.get("layout") or job_layout) for m in moments_to_render]
 
             if not moments_to_render:
                 def _zero_sel(j):
@@ -536,8 +548,9 @@ def _worker_loop():
                 if j.get("status") not in ("CANCELLED", "PAUSED"):
                     j["status"] = "COMPLETED"
                     j["progress"] = 100
-                    j["stages"]["render"] = "DONE"
-                    j["stages"]["transcribe"] = "DONE"
+                    j["stages"] = {k: ("SKIPPED" if v == "SKIPPED" else "DONE")
+                                   for k, v in (j.get("stages") or {}).items()} or {k: "DONE" for k in STAGE_ORDER}
+                    j["eta_seconds"] = None
                     j["status_message"] = f"Finished! {len(processed_clips)} clips ready for review."
                     j["stage_details"] = "Completed successfully."
                     j["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -568,12 +581,15 @@ def _worker_loop():
 
         except Exception as e:
             logger.exception(f"Job {next_job_id} failed: {e}")
+            err = str(e)
+
             def _fail(j):
                 if j.get("status") not in ("CANCELLED", "PAUSED"):
                     j["status"] = "FAILED"
-                    j["status_message"] = f"Failed: {e}"
-                    j["stage_details"] = f"Error: {e}"
-                    j["error"] = str(e)
+                    j["eta_seconds"] = None
+                    j["status_message"] = f"Failed: {err}"
+                    j["stage_details"] = f"Error: {err}"
+                    j["error"] = err
                     j["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             mutate_job(next_job_id, _fail)
 
