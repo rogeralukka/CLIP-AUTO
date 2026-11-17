@@ -14,6 +14,7 @@ from .process_manager import check_cancelled, run_tracked_command
 from .signals import (
     build_hype_curve,
     dedupe_moments,
+    save_hype_curve,
     snap_moment_boundaries,
 )
 from .utils import get_ffmpeg_path
@@ -331,6 +332,9 @@ def find_moments(
     )
     check_cancelled(job_id)
 
+    if vod_id:
+        save_hype_curve(vod_id, composite_curve, breakdown_z)
+
     # Rolling window smoothing over composite curve
     win = max(2, window)
     csum = np.cumsum(np.insert(composite_curve, 0, 0.0))
@@ -397,6 +401,9 @@ def find_moments(
             max_length=max_clip_length,
             max_lead=max_lead,
             max_trail=max_trail,
+            before=float(before),
+            after=float(after),
+            hype_curve=composite_curve,
         )
 
         # Build signal breakdown dictionary for this peak second

@@ -423,6 +423,7 @@ def _worker_loop():
                     cache_dir="downloads",
                     job_id=next_job_id,
                     progress_callback=job_progress_cb,
+                    campaign=current_job_data.get("campaign") or None,
                 )
 
                 check_cancelled_or_paused(next_job_id)
@@ -501,6 +502,8 @@ def _worker_loop():
                 overlay=overlay_config,
                 job_id=next_job_id,
                 progress_callback=job_progress_cb,
+                vod_input=current_job_data.get("vod_input"),
+                campaign=campaign or None,
             )
 
             check_cancelled_or_paused(next_job_id)

@@ -51,7 +51,31 @@ To verify your environment anytime:
 
 ---
 
-## Running the Web Application (Streamlit UI)
+## CLIP AUTO Studio (new web UI) ⭐
+
+Double-click `start_studio.bat`, or run:
+```powershell
+.\.venv\Scripts\python.exe server.py
+```
+Then open http://127.0.0.1:8765 (local only, nothing leaves your laptop).
+
+- **New run** – paste several links at once, pick a campaign, clip count and sensitivity.
+- **Queue** – live stage progress, pause / resume / cancel.
+- **Review** – the stream's hype curve with every detected moment on it, "why it was picked"
+  signal bars, the AI judge's verdict, **listen to each moment's audio before rendering**,
+  nudge start/end ±5s, edit the hook title. Keys: `J`/`K` move, `X` select, `P` play.
+- **Clips** – phone-sized players, QC badges, switch layout (Split / Gameplay / Face) and
+  re-render one clip, Keep / Reject, copy captions per platform, export kept clips + captions.
+  Keys: `J`/`K`, `Space`, `Y` keep, `N` reject, `1`/`2`/`3` layout.
+- **Live** – watch a live stream (reads Twitch chat too) and get clips minutes after the moment.
+- **Campaigns** – rules, hashtags, disclosure, length limits, overlay image.
+- **Settings** – AI judge on/off + model, Whisper model, progress bar, gameplay zoom.
+
+The old Streamlit UI (`app.py`) still works as a fallback.
+
+---
+
+## Running the Web Application (Streamlit UI, legacy)
 
 To launch the web interface:
 ```powershell

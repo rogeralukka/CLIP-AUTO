@@ -56,7 +56,7 @@ def detect_pipeline_moments(
     quality: str = "1080p",
     top: Optional[int] = None,
     before: int = 20,
-    after: int = 30,
+    after: int = 20,
     window: int = 5,
     z_thresh: float = 2.0,
     min_msgs: int = 10,
@@ -67,6 +67,7 @@ def detect_pipeline_moments(
     cache_dir: str = "downloads",
     job_id: Optional[str] = None,
     progress_callback: Optional[Callable[[str, int, str, Dict[str, Any]], None]] = None,
+    campaign: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[str], List[Dict[str, Any]]]:
     """Phase 1: Download audio-only & chat upfront, transcribe full stream ONCE, and detect hype moments."""
     check_cancelled_or_paused(job_id)
@@ -149,6 +150,13 @@ def detect_pipeline_moments(
             comments = None
 
     # 4. Detect Hype Moments on audio / chat
+    llm_cfg = cfg.get("llm", {}) or {}
+    detect_top = top
+    if top and llm_cfg.get("enabled"):
+        # Give the judge more candidates than we need so it can actually choose
+        detect_top = int(top) * int(llm_cfg.get("candidate_multiplier", 3))
+    heatmap_file = os.path.join(cache_dir, vod_id, "heatmap.json")
+    camp = campaign or {}
     moments = find_moments(
         comments=comments,
         video_path=audio_path,
@@ -158,11 +166,14 @@ def detect_pipeline_moments(
         before=before,
         after=after,
         merge_gap=merge_gap,
-        top=top,
+        top=detect_top,
         safety_max=safety_max,
         job_id=job_id,
         full_transcript_data=full_transcript_data,
+        heatmap_data=heatmap_file if os.path.isfile(heatmap_file) else None,
         vod_id=vod_id,
+        min_clip_length=float(camp.get("min_clip_length") or 15.0),
+        max_clip_length=float(camp.get("max_clip_length") or 60.0),
     )
     check_cancelled_or_paused(job_id)
 
@@ -308,8 +319,8 @@ def render_pipeline_moments(
 
             if first_w_start - start_sec > 1.0:
                 new_start = max(start_sec, first_w_start - 0.3)
-            if end_sec - last_w_end > 1.0:
-                new_end = min(end_sec, last_w_end + 0.3)
+            # No trailing trim: laughs/screams after the last word are often the payoff
+            # and Whisper does not transcribe them.
 
             if (new_end - new_start) >= campaign_min:
                 if new_start != start_sec or new_end != end_sec:
@@ -447,6 +458,11 @@ def render_pipeline_moments(
             "start_seconds": start_sec,
             "end_seconds": end_sec,
             "duration": dur,
+            "vod_id": (m.get("vod_id") if isinstance(m, dict) else None) or get_vod_id(source_input),
+            "rough_path": rough_path,
+            "ass_path": ass_path,
+            "breakdown": m.get("breakdown") if isinstance(m, dict) else None,
+            "llm_reason": m.get("llm_reason") if isinstance(m, dict) else None,
             "hype_score": score,
             "hook_title": hook_title,
             "preview": preview,
@@ -457,6 +473,15 @@ def render_pipeline_moments(
             "qc": qc_report,
             "platforms": platform_meta,
         }
+
+        # Only now does the moment count as clipped (never clip it twice)
+        try:
+            from .signals import record_clipped_moment
+            rec_vod = (m.get("vod_id") if isinstance(m, dict) else None) or get_vod_id(source_input)
+            record_clipped_moment(rec_vod, float(m["start"]) if isinstance(m, dict) else start_sec,
+                                  float(m["end"]) if isinstance(m, dict) else end_sec, score)
+        except Exception as rec_err:
+            logger.debug(f"Could not record clipped moment: {rec_err}")
 
         try:
             with open(meta_json_path, "w", encoding="utf-8") as f:
@@ -497,7 +522,7 @@ def run_pipeline(
     quality: str = "1080p",
     top: Optional[int] = 8,
     before: int = 20,
-    after: int = 30,
+    after: int = 20,
     window: int = 5,
     z_thresh: float = 2.0,
     min_msgs: int = 10,
@@ -574,3 +599,53 @@ def run_pipeline(
         vod_input=vod_input,
         campaign=campaign,
     )
+
+
+def rerender_clip(clip: Dict[str, Any], layout: Optional[str] = None, hook_title: Optional[str] = None,
+                  preset_name: Optional[str] = None, campaign: Optional[Dict[str, Any]] = None,
+                  overlay: Optional[dict] = None, cpu: bool = False) -> Dict[str, Any]:
+    """Re-render ONE finished clip with a new layout / hook title / caption preset.
+
+    Rebuilds the .ass file too, so caption position follows the new layout and an edited
+    hook title actually shows up (re-using the old .ass kept the old margins and hook).
+    """
+    clip_dir = os.path.dirname(clip["path"])
+    idx = int(clip.get("index", 1))
+    rough = clip.get("rough_path") or os.path.join(clip_dir, f"rough_{idx:02d}.mp4")
+    ass = clip.get("ass_path") or os.path.join(clip_dir, f"cap_{idx:02d}.ass")
+    if not os.path.isfile(rough):
+        raise FileNotFoundError(f"Rough clip not found: {rough}")
+
+    new_layout = (layout or clip.get("layout") or "auto").lower()
+    new_hook = clip.get("hook_title") if hook_title is None else hook_title.strip()
+
+    words: List[Tuple[float, float, str]] = []
+    vod_id = clip.get("vod_id")
+    tpath = os.path.join("downloads", vod_id, "transcript.json") if vod_id else None
+    if tpath and os.path.isfile(tpath):
+        with open(tpath, "r", encoding="utf-8") as f:
+            words = slice_transcript(json.load(f), float(clip["start_seconds"]), float(clip["end_seconds"]))
+    if not words:
+        words = transcribe_clip(rough, use_cpu=cpu, cache_dir=clip_dir)
+
+    facecam_info = clip.get("facecam")
+    if new_layout in ("auto", "split", "face") and not facecam_info:
+        facecam_info = detect_facecam(rough)
+    if new_layout == "auto":
+        new_layout = "split" if (facecam_info or {}).get("found") else "gameplay"
+
+    preset = load_preset(preset_name or clip.get("preset") or "classic_yellow")
+    make_ass(words, ass, preset=preset, layout=new_layout, hook_title=new_hook or None)
+    render_vertical_clip(rough, ass, clip["path"], overlay=overlay, use_cpu=cpu,
+                         layout=new_layout, facecam_info=facecam_info)
+
+    clip = dict(clip)
+    clip["layout"] = new_layout
+    clip["hook_title"] = new_hook
+    clip["facecam"] = facecam_info
+    clip["qc"] = perform_qc_check(clip["path"], duration=clip.get("duration", 30.0), campaign=campaign,
+                                  facecam_info=facecam_info, word_count=len(words), layout=new_layout)
+    clip["platforms"] = generate_platform_metadata(hook_title=new_hook or "",
+                                                   transcript=clip.get("transcript", ""), campaign=campaign)
+    clip["rendered_at"] = time.time()
+    return clip

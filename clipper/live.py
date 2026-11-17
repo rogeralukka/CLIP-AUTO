@@ -10,7 +10,11 @@ import logging
 import os
 import shutil
 import subprocess
+import random
+import re
+import socket
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +29,59 @@ from .transcription import transcribe_clip
 from .utils import get_ffmpeg_path
 
 logger = logging.getLogger("clipper.live")
+
+
+class TwitchChatListener(threading.Thread):
+    """Anonymous read-only Twitch chat over IRC (no account, no API key).
+
+    Stores (seconds_since_capture_start, message) so live mode can use chat speed and
+    "CLIP IT"/"LMAO" spam, which are the strongest live signals.
+    """
+
+    def __init__(self, channel: str, t0: float):
+        super().__init__(daemon=True, name=f"TwitchChat-{channel}")
+        self.channel = channel.lower().lstrip("#")
+        self.t0 = t0
+        self.messages: List[Tuple[float, str]] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+
+    def run(self):
+        while not self._stop.is_set():
+            try:
+                sock = socket.create_connection(("irc.chat.twitch.tv", 6667), timeout=30)
+                sock.sendall(b"PASS SCHMOOPIIE\r\n")
+                sock.sendall(f"NICK justinfan{random.randint(10000, 99999)}\r\n".encode())
+                sock.sendall(f"JOIN #{self.channel}\r\n".encode())
+                logger.info(f"Live chat connected: #{self.channel}")
+                buf = ""
+                while not self._stop.is_set():
+                    data = sock.recv(4096)
+                    if not data:
+                        break
+                    buf += data.decode("utf-8", errors="ignore")
+                    *lines, buf = buf.split("\r\n")
+                    for line in lines:
+                        if line.startswith("PING"):
+                            sock.sendall(b"PONG :tmi.twitch.tv\r\n")
+                            continue
+                        m = re.search(r"PRIVMSG #\S+ :(.*)$", line)
+                        if m:
+                            with self._lock:
+                                self.messages.append((time.time() - self.t0, m.group(1)))
+                sock.close()
+            except Exception as e:
+                logger.debug(f"Live chat connection error ({e}); reconnecting in 5s")
+            self._stop.wait(5)
+
+    def comments_between(self, start: float, end: float) -> List[Dict[str, Any]]:
+        """Chat in TwitchDownloader-style dicts, offsets relative to `start`."""
+        with self._lock:
+            return [{"content_offset_seconds": t - start, "message": {"body": msg}}
+                    for t, msg in self.messages if start <= t <= end]
+
+    def stop(self):
+        self._stop.set()
 
 
 def get_streamlink_path() -> Optional[str]:
@@ -87,6 +144,10 @@ class LiveStreamClipper:
 
         self._capture_proc: Optional[subprocess.Popen] = None
         self._running = False
+        self._t0 = time.time()
+        self.chat: Optional[TwitchChatListener] = None
+        self.analysis_window_seconds = 600  # only analyse the last 10 min each check
+        self.live_vod_id = f"live_{self.stream_id}"
 
     def start_capture_process(self) -> bool:
         """Start background stream capture using streamlink or yt-dlp."""
@@ -120,6 +181,11 @@ class LiveStreamClipper:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self._t0 = time.time()
+            m = re.search(r"twitch\.tv/([A-Za-z0-9_]+)/?$", self.stream_url.strip())
+            if m and m.group(1).lower() not in ("videos", "directory"):
+                self.chat = TwitchChatListener(m.group(1), self._t0)
+                self.chat.start()
             return True
         except Exception as e:
             logger.error(f"Failed to start live stream capture process: {e}")
@@ -136,16 +202,49 @@ class LiveStreamClipper:
             logger.info(f"Live buffer warming up: {curr_duration:.1f}s captured (need >= 30s)...")
             return []
 
-        logger.info(f"Analyzing live buffer ({curr_duration:.1f}s) for hype spikes...")
+        # Analyse only the most recent window. Re-scanning a 5-hour buffer every 30s
+        # would get slower and slower all stream long.
+        tail = min(self.analysis_window_seconds, curr_duration)
+        offset = curr_duration - tail
+        tail_wav = os.path.join(self.buffer_dir, "tail.wav")
+        ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
+        subprocess.run([ffmpeg_bin, "-y", "-v", "error", "-sseof", f"-{tail:.1f}", "-i", self.buffer_file,
+                        "-vn", "-ac", "1", "-ar", "16000", tail_wav],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not os.path.isfile(tail_wav):
+            return []
 
-        new_moments = find_moments(
-            video_path=self.buffer_file,
+        comments = None
+        if self.chat is not None:
+            # Chat timestamps are wall-clock since capture start; buffer time ~ the same.
+            comments = self.chat.comments_between(offset, curr_duration) or None
+
+        logger.info(f"Analyzing last {tail:.0f}s of live buffer ({curr_duration:.0f}s total, "
+                    f"{len(comments or [])} chat msgs)...")
+
+        found = find_moments(
+            comments=comments,
+            video_path=tail_wav,
             z_thresh=2.0,
-            vod_id=f"live_{self.stream_id}",
-            before=15,
-            after=25,
+            vod_id=None,
+            before=20,
+            after=20,
             window=5,
+            min_clip_length=float((self.campaign or {}).get("min_clip_length") or 15.0),
+            max_clip_length=float((self.campaign or {}).get("max_clip_length") or 60.0),
         )
+
+        # Back to buffer time; skip moments still unfolding at the live edge (next check
+        # will catch them complete) and anything already clipped.
+        from .signals import dedupe_moments
+        new_moments = []
+        for m in found:
+            m["start"] = round(m["start"] + offset, 2)
+            m["end"] = round(m["end"] + offset, 2)
+            if m["end"] > curr_duration - 3.0:
+                continue
+            new_moments.append(m)
+        new_moments = dedupe_moments(new_moments, vod_id=self.live_vod_id, downloads_dir="downloads")
 
         if not new_moments:
             logger.info("No new hype moments detected in current buffer window.")
@@ -236,6 +335,8 @@ class LiveStreamClipper:
                     f"--- X (TWITTER) ---\n{platform_meta['x_tweet']}\n"
                 )
 
+            from .signals import record_clipped_moment
+            record_clipped_moment(self.live_vod_id, start_s, end_s, m.get("score", 0.0))
             logger.info(f"Exported live clip -> {final_path} (QC: {qc['status']})")
             rendered_clips.append(clip_meta)
 
@@ -274,6 +375,8 @@ class LiveStreamClipper:
     def stop(self):
         """Stop background capture and clean up."""
         self._running = False
+        if self.chat is not None:
+            self.chat.stop()
         if self._capture_proc and self._capture_proc.poll() is None:
             logger.info("Stopping stream capture process...")
             self._capture_proc.terminate()

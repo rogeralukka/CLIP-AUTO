@@ -181,3 +181,35 @@ All test suites were executed on the target Windows 11 machine (HP Omen 16, RTX 
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
+
+---
+
+## Review pass 2 (Claude)
+
+**Bugs fixed**
+- Twitch "audio-only" downloaded the full video (TwitchDownloader `videodownload`); now yt-dlp audio-only.
+- yt-dlp section downloads now use `--force-keyframes-at-cuts`, so captions don't drift 1-4s.
+- Dedupe wrote every *detected* moment to `clipped_moments.json`, so re-running detection on the
+  same VOD returned nothing. Moments are now recorded only after they are actually rendered.
+- Clip boundaries were centred on the peak (half the clip after the reaction, little setup).
+  Chat/loudness peak *after* the cause, so clips now start `before` seconds ahead of the peak and
+  end when the hype curve dies down (capped at `after`), then snap to sentences.
+- Campaign min/max clip length was never passed into detection; now it is.
+- The AI judge only ever saw N candidates (nothing to choose from); it now gets N x multiplier.
+- YouTube "most replayed" heatmap was downloaded but never fed into the hype curve; now it is.
+- Trailing silence trim cut off laughs/screams after the last word; removed (leading trim kept).
+- Re-render with a new layout reused the old .ass (wrong caption position, edited hook ignored);
+  new `pipeline.rerender_clip()` rebuilds captions for the new layout/hook.
+- `load_config` mutated its defaults (shallow copy); fixed.
+
+**Added**
+- Facecam detection scans zoomed tiles so small corner webcams are found; picks the cluster seen
+  in the most frames (in-game faces wander); full-screen cams get the Face layout; wider crop.
+- Gameplay layout zooms in a bit (configurable 16:9 / 4:3 / 1:1) so it's bigger on phones.
+- Progress bar along the bottom of every clip (configurable).
+- Live mode: reads Twitch chat anonymously over IRC (no account/key), analyses only the last
+  10 minutes each check (it was re-scanning the whole growing buffer), skips moments still
+  happening at the live edge, never clips the same moment twice, checks every 30s.
+- Hype curve saved per VOD (`downloads/<vod>/hype_curve.json`) for the review UI.
+- New web UI: `server.py` (FastAPI) + `web/` (no build step), `start_studio.bat`.
+- UI settings are saved to `config/user_overrides.yaml` so `config/clipper.yaml` is never rewritten.

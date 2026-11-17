@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLIP AUTO Studio</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside class="side">
+  <div class="brand"><span class="logo">▶</span><div><b>CLIP AUTO</b><small>studio</small></div></div>
+  <nav id="nav">
+    <a href="#new" data-page="new"><i>＋</i>New run</a>
+    <a href="#queue" data-page="queue"><i>≡</i>Queue <em id="b-queue"></em></a>
+    <a href="#review" data-page="review"><i>◎</i>Review <em id="b-review" class="hot"></em></a>
+    <a href="#clips" data-page="clips"><i>▣</i>Clips <em id="b-clips"></em></a>
+    <a href="#live" data-page="live"><i>●</i>Live <em id="b-live" class="hot"></em></a>
+    <a href="#campaigns" data-page="campaigns"><i>⚑</i>Campaigns</a>
+    <a href="#settings" data-page="settings"><i>⚙</i>Settings</a>
+  </nav>
+  <div class="sys" id="sys">
+    <div class="sysrow"><span>GPU</span><b id="sys-gpu">…</b></div>
+    <div class="meter"><div id="sys-vram"></div></div>
+    <div class="sysrow"><span>AI judge</span><b id="sys-llm">…</b></div>
+    <div class="sysrow"><span>Whisper</span><b id="sys-whisper">…</b></div>
+  </div>
+</aside>
+<main id="main"></main>
+<div id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

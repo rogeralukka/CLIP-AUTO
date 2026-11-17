@@ -55,3 +55,4 @@ tests/audio_clips/
 tests/test_clips/
 tests/test_scratch/
 tests/__pycache__/
+config/user_overrides.yaml

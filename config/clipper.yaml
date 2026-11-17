@@ -38,11 +38,15 @@ llm:
 facecam:
   sample_interval_seconds: 1.0   # Sample 1 frame/sec for face detection
   presence_threshold: 0.60       # Use split layout if face presence >= 60%
-  box_padding: 0.25              # Expansion padding around detected face
+  box_padding: 1.0               # Expansion around the face (1.0 = webcam-sized: head + shoulders)
+  fullscreen_face_ratio: 0.22    # Face taller than this share of the frame => full-screen cam ("face" layout)
   split_facecam_height: 640      # Height of facecam area in 1080x1920 split layout
   gameplay_blur_background: true # Blur background for gameplay fit-to-width
+  gameplay_aspect: "4:3"         # Center-crop gameplay to this before fitting ("16:9" = no crop, "4:3", "1:1")
 
 polish:
+  progress_bar: true             # Thin bar along the bottom that fills as the clip plays
+  progress_bar_color: "yellow"
   hook_duration_seconds: 2.5
   loudnorm:
     enabled: true

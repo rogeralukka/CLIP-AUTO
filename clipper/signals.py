@@ -95,6 +95,8 @@ def calculate_chat_signals(
         keywords_dict = keywords_dict or kw
         patterns_dict = patterns_dict or pat
 
+    compiled_kw = [(re.compile(r"(?<!\w)" + re.escape(str(kw).lower()) + r"(?!\w)"), float(w))
+                   for kw, w in keywords_dict.items()]
     chat_rate = np.zeros(duration, dtype=np.float32)
     chat_keywords = np.zeros(duration, dtype=np.float32)
     msgs_by_sec: Dict[int, List[str]] = {s: [] for s in range(duration)}
@@ -114,8 +116,8 @@ def calculate_chat_signals(
                 kw_score = 0.0
 
                 # 1. Match keywords
-                for kw, weight in keywords_dict.items():
-                    if re.search(r"\b" + re.escape(kw) + r"\b", body_lower):
+                for kw_re, weight in compiled_kw:
+                    if kw_re.search(body_lower):
                         kw_score += weight
 
                 # 2. Match question wall ("???")
@@ -355,52 +357,56 @@ def snap_moment_boundaries(
     max_length: float = 60.0,
     max_lead: float = 5.0,
     max_trail: float = 5.0,
+    before: float = 20.0,
+    after: float = 20.0,
+    hype_curve: Optional[np.ndarray] = None,
 ) -> Tuple[float, float]:
-    """Smart sentence boundary snapping.
+    """Choose clip boundaries around a hype peak.
 
-    Snaps start to the beginning of the sentence before the peak (look back up to max_lead sec).
-    Snaps end to the end of the sentence after the peak (look forward up to max_trail sec).
-    Respects campaign min and max clip duration.
+    Chat and loudness peak AFTER the thing that caused them, so the clip must lead with
+    setup: start = peak - before. The end follows the hype curve: the clip runs until the
+    reaction has died down (curve under 25% of the peak for 4s), capped at peak + after.
+    Both ends are then snapped to sentence boundaries and clamped to min/max length.
     """
-    half_def = min_length / 2.0
-    initial_start = max(0.0, peak_time - half_def)
-    initial_end = min(stream_duration, peak_time + half_def)
+    raw_start = max(0.0, peak_time - before)
+    raw_end = min(stream_duration, peak_time + after)
 
-    if not full_transcript_data:
-        return initial_start, initial_end
+    # Adaptive end: stop a few seconds after the reaction dies down
+    if hype_curve is not None and len(hype_curve) > 0:
+        p = int(min(len(hype_curve) - 1, max(0, peak_time)))
+        lo, hi = max(0, p - 3), min(len(hype_curve), p + 4)
+        peak_val = float(np.max(hype_curve[lo:hi])) if hi > lo else 0.0
+        if peak_val > 0:
+            quiet = 0
+            limit = int(min(len(hype_curve), peak_time + after))
+            for sec in range(p + 6, limit):
+                quiet = quiet + 1 if hype_curve[sec] < 0.25 * peak_val else 0
+                if quiet >= 4:
+                    raw_end = min(raw_end, float(sec + 2))
+                    break
 
-    segments = full_transcript_data.get("segments", [])
-    if not segments:
-        return initial_start, initial_end
+    best_start, best_end = raw_start, raw_end
+    segments = (full_transcript_data or {}).get("segments", []) or []
+    if segments:
+        starts = [float(sg.get("start", 0.0)) for sg in segments]
+        ends = [float(sg.get("end", 0.0)) for sg in segments]
+        cand = [x for x in starts if abs(x - raw_start) <= max_lead and x < peak_time]
+        if cand:
+            best_start = min(cand, key=lambda x: abs(x - raw_start))
+        cand = [x for x in ends if abs(x - raw_end) <= max_trail and x > peak_time]
+        if cand:
+            # Prefer finishing the sentence over cutting it short
+            best_end = max(cand)
 
-    # 1. Snap Start: look for sentence starting within [peak_time - max_length/2 - max_lead, peak_time]
-    best_start = initial_start
-    target_start = max(0.0, peak_time - half_def)
-
-    # Find closest segment boundary before target_start
-    for seg in segments:
-        s_start = seg.get("start", 0.0)
-        if abs(s_start - target_start) <= max_lead and s_start < peak_time:
-            best_start = s_start
-            break
-
-    # 2. Snap End: look for sentence ending within [peak_time + half_def, peak_time + max_length/2 + max_trail]
-    best_end = initial_end
-    target_end = min(stream_duration, best_start + min_length)
-
-    for seg in reversed(segments):
-        s_end = seg.get("end", stream_duration)
-        if s_end > peak_time and abs(s_end - (best_start + min_length)) <= max_trail:
-            best_end = s_end
-            break
-
-    # 3. Enforce min/max length constraints
-    dur = best_end - best_start
-    if dur < min_length:
+    best_start = max(0.0, best_start)
+    best_end = min(stream_duration, best_end)
+    if best_end - best_start < min_length:
         best_end = min(stream_duration, best_start + min_length)
-    dur = best_end - best_start
-    if dur > max_length:
-        best_end = best_start + max_length
+        if best_end - best_start < min_length:
+            best_start = max(0.0, best_end - min_length)
+    if best_end - best_start > max_length:
+        # Keep the payoff: trim setup from the front, never the reaction at the end
+        best_start = best_end - max_length
 
     return round(best_start, 2), round(best_end, 2)
 
@@ -410,6 +416,7 @@ def dedupe_moments(
     vod_id: str,
     overlap_threshold: float = 0.50,
     downloads_dir: str = "downloads",
+    persist: bool = False,
 ) -> List[Dict[str, Any]]:
     """Deduplicate moments against previously clipped moments stored in downloads/<vod_id>/clipped_moments.json.
 
@@ -454,7 +461,11 @@ def dedupe_moments(
         if not overlapping:
             accepted_moments.append(m)
 
-    # Update clipped_moments.json with newly accepted moments
+    # Detection must NOT write here: a moment only counts as "clipped" once it has been
+    # rendered (see record_clipped_moment). Otherwise re-running detection returns nothing.
+    if not persist:
+        return accepted_moments
+
     updated_records = []
     for s, e in existing_ranges:
         updated_records.append({"start": s, "end": e})
@@ -468,3 +479,49 @@ def dedupe_moments(
         logger.warning(f"Could not persist clipped moments to {clipped_file}: {e}")
 
     return accepted_moments
+
+
+def record_clipped_moment(vod_id: str, start: float, end: float, score: float = 0.0,
+                          downloads_dir: str = "downloads") -> None:
+    """Remember a moment that was actually rendered, so later runs never clip it twice."""
+    clipped_file = os.path.join(downloads_dir, vod_id, "clipped_moments.json")
+    os.makedirs(os.path.dirname(clipped_file), exist_ok=True)
+    records: List[Dict[str, Any]] = []
+    if os.path.isfile(clipped_file):
+        try:
+            with open(clipped_file, "r", encoding="utf-8") as f:
+                records = json.load(f) or []
+        except Exception:
+            records = []
+    for r in records:
+        if abs(r.get("start", -1) - start) < 1.0 and abs(r.get("end", -1) - end) < 1.0:
+            return
+    records.append({"start": start, "end": end, "score": score})
+    try:
+        with open(clipped_file, "w", encoding="utf-8") as f:
+            json.dump(records, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not persist clipped moment: {e}")
+
+
+def save_hype_curve(vod_id: str, composite: np.ndarray, breakdown: Dict[str, np.ndarray],
+                    downloads_dir: str = "downloads", step: int = 5) -> Optional[str]:
+    """Save a downsampled hype curve (max per `step` seconds) for the review UI."""
+    try:
+        out_dir = os.path.join(downloads_dir, vod_id)
+        os.makedirs(out_dir, exist_ok=True)
+
+        def ds(arr: np.ndarray) -> List[float]:
+            n = (len(arr) // step) * step
+            if n == 0:
+                return [round(float(x), 2) for x in arr]
+            return [round(float(x), 2) for x in arr[:n].reshape(-1, step).max(axis=1)]
+
+        path = os.path.join(out_dir, "hype_curve.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"step": step, "duration": int(len(composite)), "composite": ds(composite),
+                       "signals": {k: ds(v) for k, v in breakdown.items() if np.any(v > 0.01)}}, f)
+        return path
+    except Exception as e:
+        logger.warning(f"Could not save hype curve: {e}")
+        return None

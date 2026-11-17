@@ -64,14 +64,18 @@ class FaceDetectorWrapper:
         return self._backend
 
     def detect_faces(self, frame_bgr: np.ndarray) -> List[Tuple[int, int, int, int]]:
-        """Detect faces in a BGR frame. Returns list of (x, y, w, h) bounding boxes."""
+        """Detect faces on one image (multi-scale tiling lives in detect_faces_multiscale)."""
+        return self._detect_raw(frame_bgr)
+
+    def _detect_raw(self, frame_bgr: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        """Run the active backend on one image. Returns list of (x, y, w, h) bounding boxes."""
         h, w = frame_bgr.shape[:2]
         boxes: List[Tuple[int, int, int, int]] = []
 
         if self._backend == "mediapipe" and self._mp_detector is not None:
             try:
                 import mediapipe as mp
-                rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                rgb = np.ascontiguousarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
                 mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 results = self._mp_detector.detect(mp_img)
                 for det in results.detections:
@@ -81,7 +85,7 @@ class FaceDetectorWrapper:
                     by = max(0, int(bb.origin_y))
                     bw = min(w - bx, int(bb.width))
                     bh = min(h - by, int(bb.height))
-                    if bw > 15 and bh > 15:
+                    if bw > 10 and bh > 10:
                         boxes.append((bx, by, bw, bh))
                 return boxes
             except Exception as e:
@@ -104,6 +108,33 @@ class FaceDetectorWrapper:
 
 # Singleton detector instance
 _DETECTOR: Optional[FaceDetectorWrapper] = None
+
+
+def detect_faces_multiscale(detector: "FaceDetectorWrapper", frame_bgr: np.ndarray) -> List[Tuple[int, int, int, int]]:
+    """Detect faces on the full frame AND on 2x-upscaled overlapping tiles.
+
+    A streamer's facecam is small in a 1080p frame (face ~80-150px), below what the
+    short-range face model reliably finds. Zooming into tiles makes those faces big enough.
+    """
+    h, w = frame_bgr.shape[:2]
+    found = list(detector.detect_faces(frame_bgr))
+    tw, th = w // 2, h // 2
+    for ty in (0, h // 4, h - th):
+        for tx in (0, w // 4, w - tw):
+            tile = frame_bgr[ty:ty + th, tx:tx + tw]
+            if tile.size == 0:
+                continue
+            big = cv2.resize(tile, (tw * 2, th * 2), interpolation=cv2.INTER_LINEAR)
+            for (x, y, bw, bh) in detector.detect_faces(big):
+                found.append((tx + x // 2, ty + y // 2, max(1, bw // 2), max(1, bh // 2)))
+    # Drop near-duplicates (same face found on several tiles)
+    unique: List[Tuple[int, int, int, int]] = []
+    for b in sorted(found, key=lambda r: -r[2] * r[3]):
+        cx, cy = b[0] + b[2] / 2.0, b[1] + b[3] / 2.0
+        if not any(abs(cx - (u[0] + u[2] / 2.0)) < u[2] * 0.6 and abs(cy - (u[1] + u[3] / 2.0)) < u[3] * 0.6
+                   for u in unique):
+            unique.append(b)
+    return unique
 
 
 def get_face_detector() -> FaceDetectorWrapper:
@@ -205,8 +236,9 @@ def cluster_face_boxes(
     if not clusters:
         return None
 
-    # Pick cluster with most detections
-    clusters.sort(key=lambda c: len(c), reverse=True)
+    # Pick the cluster seen in the most distinct frames (a facecam stays put; faces of
+    # in-game characters wander and never build a big cluster).
+    clusters.sort(key=lambda c: len({round(b[0], 2) for b in c}), reverse=True)
     best_cluster = clusters[0]
 
     # Compute median bounding box
@@ -228,7 +260,7 @@ def cluster_face_boxes(
     corner = f"{corner_y}_{corner_x}"
 
     return {
-        "count": len(best_cluster),
+        "count": len({round(b[0], 2) for b in best_cluster}),
         "median_box": (med_x, med_y, med_w, med_h),
         "corner": corner,
         "boxes": best_cluster,
@@ -250,11 +282,11 @@ def expand_box_with_padding(
     pad_w = int(w * padding)
     pad_h = int(h * padding)
 
-    # Initial padded box
+    # Initial padded box. More room below the face than above (shoulders, not ceiling).
     x0 = max(0, x - pad_w)
-    y0 = max(0, y - pad_h)
+    y0 = max(0, y - int(pad_h * 0.7))
     x1 = min(frame_width, x + w + pad_w)
-    y1 = min(frame_height, y + h + pad_h)
+    y1 = min(frame_height, y + h + int(pad_h * 1.3))
 
     curr_w = x1 - x0
     curr_h = y1 - y0
@@ -341,7 +373,7 @@ def detect_facecam(
     frames_with_face = 0
 
     for t, frame in samples:
-        boxes = detector.detect_faces(frame)
+        boxes = detect_faces_multiscale(detector, frame)
         if boxes:
             frames_with_face += 1
             for b in boxes:
@@ -363,13 +395,18 @@ def detect_facecam(
             "detected_samples": 0,
         }
 
-    cluster_count = cluster["count"]
+    cluster_count = min(cluster["count"], total_samples)
     presence_ratio = round(cluster_count / max(1, total_samples), 3)
     found = presence_ratio >= thresh
 
     med_box = cluster["median_box"]
     padded_box = expand_box_with_padding(med_box, frame_w, frame_h, padding)
     layout = "split" if found else "gameplay"
+    # A face that fills a big part of the frame is a full-screen cam (Just Chatting /
+    # reaction), not a corner facecam: splitting would show the same picture twice.
+    big_face_ratio = float(fc_cfg.get("fullscreen_face_ratio", 0.22))
+    if found and med_box[3] >= frame_h * big_face_ratio:
+        layout = "face"
 
     logger.info(
         f"Facecam analysis: found={found}, presence={presence_ratio:.1%} ({cluster_count}/{total_samples}), "

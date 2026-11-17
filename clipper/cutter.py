@@ -194,10 +194,18 @@ def render_vertical_clip(
         )
     else:
         # Default 'gameplay': 16:9 gameplay fit in center with blurred background
+        # Center-crop the gameplay a little (default 4:3) so it is bigger on a phone screen
+        fc_cfg = load_config().get("facecam", {})
+        try:
+            aw, ah = [float(x) for x in str(fc_cfg.get("gameplay_aspect", "4:3")).split(":")]
+            g_aspect = max(9 / 16, min(16 / 9, aw / ah))
+        except Exception:
+            g_aspect = 4 / 3
+        fg_h = int(round(1080 / g_aspect / 2) * 2)
         filter_parts.append(
             "[0:v] split [main_fg][main_bg]; "
             "[main_bg] scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5,eq=brightness=-0.15 [bg_blur]; "
-            "[main_fg] scale=1080:608:force_original_aspect_ratio=decrease,setsar=1 [fg_game]; "
+            f"[main_fg] crop='min(iw,ih*{g_aspect:.4f})':ih,scale=1080:{fg_h},setsar=1 [fg_game]; "
             "[bg_blur][fg_game] overlay=(W-w)/2:(H-h)/2 [v_base]"
         )
 
@@ -230,6 +238,22 @@ def render_vertical_clip(
         over_scale = f"scale={ow}:{oh}" if (ow != "-1" or oh != "-1") else "null"
         filter_parts.append(f"[1:v] {over_scale} [v_over]; {curr_v}[v_over] overlay={ox}:{oy} [outv]")
         curr_v = "[outv]"
+
+    # Progress bar along the bottom edge (fills as the clip plays)
+    pol = load_config().get("polish", {})
+    if pol.get("progress_bar", True):
+        try:
+            from .detection import get_media_duration_seconds
+            clip_dur = float(get_media_duration_seconds(abs_rough))
+        except Exception:
+            clip_dur = 0.0
+        if clip_dur > 1.0:
+            bar_color = str(pol.get("progress_bar_color", "yellow"))
+            filter_parts.append(
+                f"color=c={bar_color}:s=1080x10:r=30 [pbar]; "
+                f"{curr_v}[pbar] overlay=x='-W+W*t/{clip_dur:.3f}':y=H-10:shortest=1 [v_bar]"
+            )
+            curr_v = "[v_bar]"
 
     full_filter_complex = "; ".join(filter_parts)
 
