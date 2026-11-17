@@ -91,12 +91,24 @@ def main():
     p.add_argument("--cpu", action="store_true", help="Force CPU mode (int8 Whisper + libx264 encoder)")
     p.add_argument("--preset", default="classic_yellow", help="Caption style preset in presets/ (default: classic_yellow)")
     p.add_argument("--output-dir", default="clips", help="Folder to save rendered clips (default: clips)")
+    p.add_argument("--live", default=None, help="Live stream URL to monitor in real-time (rolling buffer clipping)")
     p.add_argument("--dry-run", action="store_true", help="Execute dry run with synthetic test video and chat")
 
     a = p.parse_args()
 
     if a.dry_run:
         run_dry_run()
+        return
+
+    if a.live:
+        setup_logging()
+        setup_cuda_dlls()
+        from clipper.live import run_live_clipping
+        run_live_clipping(
+            stream_url=a.live,
+            preset=a.preset,
+            use_cpu=a.cpu,
+        )
         return
 
     if not a.vod:
