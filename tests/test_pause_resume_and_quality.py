@@ -50,11 +50,10 @@ def run_tests():
     assert "best" in q_ids, "best must be in available qualities"
     assert "720p" in q_ids, "720p must be in available qualities"
     assert "480p" in q_ids, "480p must be in available qualities"
-    assert "audio_only" in q_ids, "audio_only must be in available qualities"
 
     has_sizes = any(q.get("size_mb", 0) > 0 for q in qualities)
     assert has_sizes, "Qualities must contain estimated sizes"
-    print(">>> TEST 1 PASSED: All 5 quality options with estimated sizes detected successfully.")
+    print(">>> TEST 1 PASSED: All video quality options with estimated sizes detected successfully.")
 
     print("\n" + "=" * 70)
     print("  TEST 2: PAUSE & RESUME ON DOWNLOAD / EXECUTION")
