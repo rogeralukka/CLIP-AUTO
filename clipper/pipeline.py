@@ -6,11 +6,10 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .captions import load_preset, make_ass
+from .captions import extract_hook_phrase, load_preset, make_ass
 from .config import load_config
 from .cutter import cut_rough_clip, render_vertical_clip
 from .detection import find_moments
-from .facecam import detect_facecam
 from .downloader import (
     download_audio_and_chat,
     download_video_section,
@@ -18,7 +17,9 @@ from .downloader import (
     is_url,
     prepare_input,
 )
+from .facecam import detect_facecam
 from .process_manager import check_cancelled_or_paused, is_job_paused, log_job_message
+from .qc import generate_platform_metadata, perform_qc_check
 from .transcription import (
     get_transcript_text_in_window,
     slice_transcript,
@@ -209,6 +210,7 @@ def render_pipeline_moments(
     progress_callback: Optional[Callable[[str, int, str, Dict[str, Any]], None]] = None,
     vod_input: Optional[str] = None,
     full_transcript_data: Optional[Dict[str, Any]] = None,
+    campaign: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Stage 4 & 5: Download needed video sections, slice transcript captions, and render vertical 9:16 shorts."""
     check_cancelled_or_paused(job_id)
@@ -289,6 +291,34 @@ def render_pipeline_moments(
 
         step_base_pct = 35 + int(((i - 1) / total) * 60)
 
+        # Silence trimming: remove leading / trailing dead air >1s down to 0.3s
+        campaign_min = float(campaign.get("min_length_seconds", 15.0)) if campaign else 15.0
+        words_in_vod: List[Dict[str, Any]] = []
+        if full_transcript_data and full_transcript_data.get("words"):
+            words_in_vod = [
+                w for w in full_transcript_data["words"]
+                if start_sec <= w["start"] <= end_sec
+            ]
+
+        if words_in_vod:
+            first_w_start = words_in_vod[0]["start"]
+            last_w_end = words_in_vod[-1]["end"]
+            new_start = start_sec
+            new_end = end_sec
+
+            if first_w_start - start_sec > 1.0:
+                new_start = max(start_sec, first_w_start - 0.3)
+            if end_sec - last_w_end > 1.0:
+                new_end = min(end_sec, last_w_end + 0.3)
+
+            if (new_end - new_start) >= campaign_min:
+                if new_start != start_sec or new_end != end_sec:
+                    logger.info(
+                        f"Trimmed dead air for clip {i}: {start_sec:.1f}s-{end_sec:.1f}s -> {new_start:.1f}s-{new_end:.1f}s"
+                    )
+                    start_sec = round(new_start, 2)
+                    end_sec = round(new_end, 2)
+
         # Step A: Download required video section (or cut from local video)
         if progress_callback:
             progress_callback(
@@ -358,8 +388,13 @@ def render_pipeline_moments(
         else:
             active_layout = clip_layout
 
-        # Step C: Subtitles ASS adapted to layout
-        make_ass(words, ass_path, preset=preset, layout=active_layout)
+        # Hook title: from LLM judge -> fallback to first strong phrase of transcript
+        hook_title = m.get("hook_title") if isinstance(m, dict) else None
+        if not hook_title and words:
+            hook_title = extract_hook_phrase(words)
+
+        # Step C: Subtitles ASS adapted to layout with Hook Title
+        make_ass(words, ass_path, preset=preset, layout=active_layout, hook_title=hook_title)
 
         # Step D: Render Vertical 9:16
         if progress_callback:
@@ -383,20 +418,66 @@ def render_pipeline_moments(
         check_cancelled_or_paused(job_id)
 
         transcript_text = " ".join(w[2] for w in words)
-        generated_clips.append({
+        dur = round(end_sec - start_sec, 2)
+
+        # Step E: QC and Platform Metadata
+        qc_report = perform_qc_check(
+            final_path,
+            duration=dur,
+            campaign=campaign,
+            facecam_info=facecam_info,
+            word_count=len(words),
+            layout=active_layout,
+        )
+
+        platform_meta = generate_platform_metadata(
+            hook_title=hook_title or "",
+            transcript=transcript_text,
+            campaign=campaign,
+        )
+
+        # Save metadata and platform captions txt
+        meta_json_path = os.path.join(output_dir, f"{clip_base}_metadata.json")
+        captions_txt_path = os.path.join(output_dir, f"{clip_base}_captions.txt")
+
+        clip_dict = {
             "index": i,
             "filename": os.path.basename(final_path),
             "path": final_path,
             "start_seconds": start_sec,
             "end_seconds": end_sec,
-            "duration": end_sec - start_sec,
+            "duration": dur,
             "hype_score": score,
+            "hook_title": hook_title,
             "preview": preview,
             "word_count": len(words),
             "transcript": transcript_text,
             "layout": active_layout,
             "facecam": facecam_info,
-        })
+            "qc": qc_report,
+            "platforms": platform_meta,
+        }
+
+        try:
+            with open(meta_json_path, "w", encoding="utf-8") as f:
+                json.dump(clip_dict, f, indent=2)
+            with open(captions_txt_path, "w", encoding="utf-8") as f:
+                f.write(
+                    f"=== {hook_title or 'CLIP ' + str(i)} ===\n\n"
+                    f"--- YOUTUBE SHORTS ---\n"
+                    f"Title: {platform_meta['youtube_title']}\n\n"
+                    f"Description:\n{platform_meta['youtube_description']}\n\n"
+                    f"--- TIKTOK ---\n"
+                    f"Caption:\n{platform_meta['tiktok_caption']}\n\n"
+                    f"--- INSTAGRAM REELS ---\n"
+                    f"Caption:\n{platform_meta['reels_caption']}\n\n"
+                    f"--- X (TWITTER) ---\n"
+                    f"Post:\n{platform_meta['x_tweet']}\n"
+                )
+        except Exception as e:
+            logger.warning(f"Could not save clip metadata or captions txt: {e}")
+
+        generated_clips.append(clip_dict)
         log_job_message(job_id, f"Finished rendering clip {i} of {total} ({os.path.basename(final_path)})")
 
         if progress_callback:
@@ -432,6 +513,7 @@ def run_pipeline(
     moments: Optional[List[Dict[str, Any]]] = None,
     detect_only: bool = False,
     progress_callback: Optional[Callable[[str, int, str, Dict[str, Any]], None]] = None,
+    campaign: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Execute the stream clipper pipeline end-to-end or staged."""
     check_cancelled_or_paused(job_id)
@@ -449,6 +531,7 @@ def run_pipeline(
             job_id=job_id,
             progress_callback=progress_callback,
             vod_input=vod_input,
+            campaign=campaign,
         )
 
     # Detect moments (audio-first + full transcript)
@@ -489,4 +572,5 @@ def run_pipeline(
         job_id=job_id,
         progress_callback=progress_callback,
         vod_input=vod_input,
+        campaign=campaign,
     )

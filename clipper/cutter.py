@@ -1,9 +1,12 @@
 """Video cutting and vertical 9:16 rendering with tracked processes and NVENC."""
+import json
 import logging
 import os
+import subprocess
 from typing import Any, Dict, List, Optional
 
 from .captions import escape_ffmpeg_ass_path
+from .config import load_config
 from .facecam import compute_gameplay_crop, detect_facecam
 from .process_manager import check_cancelled_or_paused, run_tracked_command
 from .utils import get_ffmpeg_path
@@ -16,6 +19,53 @@ def get_video_encoder_flags(use_cpu: bool = False) -> List[str]:
     if use_cpu:
         return ["-c:v", "libx264", "-preset", "fast", "-crf", "20"]
     return ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "21"]
+
+
+def get_loudnorm_audio_filter(
+    source_media: str,
+    target_lufs: float = -14.0,
+    target_tp: float = -1.0,
+    target_lra: float = 11.0,
+) -> Optional[str]:
+    """Measure two-pass loudness parameters and return loudnorm audio filter string.
+
+    If audio is already within +/- 1.0 LUFS of target and true peak <= target_tp,
+    returns None to avoid unnecessary re-compression.
+    """
+    ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
+    cmd = [
+        ffmpeg_bin,
+        "-i", os.path.abspath(source_media),
+        "-af", f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={target_lra}:print_format=json",
+        "-f", "null", "-",
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        start = res.stderr.find("{")
+        end = res.stderr.rfind("}")
+        if start != -1 and end != -1:
+            data = json.loads(res.stderr[start:end+1])
+            input_i = float(data.get("input_i", -99.0))
+            input_tp = float(data.get("input_tp", 0.0))
+            input_lra = float(data.get("input_lra", 0.0))
+            input_thresh = float(data.get("input_thresh", 0.0))
+            target_offset = float(data.get("target_offset", 0.0))
+
+            if abs(input_i - target_lufs) <= 1.0 and input_tp <= target_tp:
+                logger.info(
+                    f"Audio loudness ({input_i:.1f} LUFS) is already at target ({target_lufs:.1f}); skipping loudnorm."
+                )
+                return None
+
+            return (
+                f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={target_lra}:"
+                f"measured_I={input_i}:measured_TP={input_tp}:measured_LRA={input_lra}:"
+                f"measured_thresh={input_thresh}:offset={target_offset}:linear=true"
+            )
+    except Exception as e:
+        logger.debug(f"Failed to measure loudnorm pass 1: {e}")
+
+    return None
 
 
 def cut_rough_clip(
@@ -183,6 +233,22 @@ def render_vertical_clip(
 
     full_filter_complex = "; ".join(filter_parts)
 
+    # Optional two-pass loudness normalization
+    cfg = load_config()
+    polish_cfg = cfg.get("polish", {}).get("loudnorm", {})
+    af_filter = None
+    if polish_cfg.get("enabled", True):
+        af_filter = get_loudnorm_audio_filter(
+            abs_rough,
+            target_lufs=polish_cfg.get("target_lufs", -14.0),
+            target_tp=polish_cfg.get("target_tp", -1.0),
+            target_lra=polish_cfg.get("target_lra", 11.0),
+        )
+
+    audio_flags = ["-c:a", "aac", "-b:a", "160k"]
+    if af_filter:
+        audio_flags = ["-af", af_filter, *audio_flags]
+
     cmd = [
         ffmpeg_bin, "-y",
         *inputs,
@@ -191,8 +257,7 @@ def render_vertical_clip(
         "-map", "0:a",
         "-pix_fmt", "yuv420p",
         *encoder_flags,
-        "-c:a", "aac",
-        "-b:a", "160k",
+        *audio_flags,
         abs_out
     ]
 

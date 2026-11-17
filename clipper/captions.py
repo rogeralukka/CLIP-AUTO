@@ -66,8 +66,24 @@ def fmt_ts(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-def build_ass_header(preset: Dict[str, Any]) -> str:
-    """Generate ASS script header with custom style tokens from preset."""
+def extract_hook_phrase(words: List[Tuple[float, float, str]], max_words: int = 7) -> str:
+    """Extract the first strong phrase from word timestamps as a fallback hook title."""
+    if not words:
+        return ""
+    text_words = [w[2].strip() for w in words if w[2].strip()]
+    if not text_words:
+        return ""
+    selected = []
+    for w in text_words[:max_words]:
+        selected.append(w)
+        if any(w.endswith(punct) for punct in [".", "!", "?", ","]):
+            break
+    clean = " ".join(selected).rstrip(",.")
+    return clean
+
+
+def build_ass_header(preset: Dict[str, Any], hook_margin_v: int = 240) -> str:
+    """Generate ASS script header with Cap and Hook style definitions."""
     style_line = (
         f"Style: Cap,{preset['font_name']},{preset['font_size']},"
         f"{preset['primary_colour']},{preset['secondary_colour']},"
@@ -75,6 +91,11 @@ def build_ass_header(preset: Dict[str, Any]) -> str:
         f"{preset['bold']},{preset['italic']},0,0,100,100,1,0,1,"
         f"{preset['outline']},{preset['shadow']},{preset['alignment']},"
         f"{preset['margin_l']},{preset['margin_r']},{preset['margin_v']},1"
+    )
+
+    hook_style_line = (
+        f"Style: Hook,Arial Black,92,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,"
+        f"-1,0,0,0,100,100,1,0,1,8,4,8,80,80,{hook_margin_v},1"
     )
 
     return f"""[Script Info]
@@ -87,6 +108,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 {style_line}
+{hook_style_line}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -100,8 +122,10 @@ def make_ass(
     max_words: Optional[int] = None,
     gap_break: Optional[float] = None,
     layout: str = "auto",
+    hook_title: Optional[str] = None,
+    hook_duration: float = 2.5,
 ) -> str:
-    """Create a word-by-word karaoke ASS subtitle file from transcribed words.
+    """Create a word-by-word karaoke ASS subtitle file with optional hook title card.
 
     Args:
         words: List of (start_sec, end_sec, text) tuples.
@@ -110,6 +134,8 @@ def make_ass(
         max_words: Override max words per subtitle card.
         gap_break: Override silence duration threshold to start a new subtitle card.
         layout: Vertical video layout ('split', 'gameplay', 'face', or 'auto').
+        hook_title: Big bold hook text displayed for first hook_duration seconds.
+        hook_duration: Duration to display hook title (default 2.5s).
     """
     if preset is None:
         preset = dict(DEFAULT_PRESET)
@@ -119,8 +145,11 @@ def make_ass(
     # Adjust vertical margin based on layout to avoid overlapping facecam
     if layout == "split":
         preset["margin_v"] = preset.get("split_margin_v", 360)
-    elif layout == "gameplay":
-        preset["margin_v"] = preset.get("gameplay_margin_v", 480)
+        hook_margin_v = 680  # Top of gameplay section below 640px facecam
+    else:
+        if layout == "gameplay":
+            preset["margin_v"] = preset.get("gameplay_margin_v", 480)
+        hook_margin_v = 240  # Top safe area
 
     limit_words = max_words if max_words is not None else preset.get("max_words_per_line", 5)
     gap_limit = gap_break if gap_break is not None else preset.get("gap_break_seconds", 0.6)
@@ -143,22 +172,29 @@ def make_ass(
         groups.append(cur)
 
     lines: List[str] = []
+
+    # Insert hook title banner if provided
+    final_hook = hook_title or extract_hook_phrase(words)
+    if final_hook:
+        lines.append(
+            f"Dialogue: 1,0:00:00.00,{fmt_ts(hook_duration)},Hook,,0,0,0,,{final_hook.upper()}"
+        )
+
     for g in groups:
         # Build {\kf<cs>} tag for each word
-        # In ASS, \kf fills smoothly from secondary colour (white) to primary colour (yellow/green)
         card_text = " ".join(
             r"{\kf%d}%s" % (max(1, int(round((e - s) * 100))), t.upper())
             for s, e, t in g
         )
         lines.append(f"Dialogue: 0,{fmt_ts(g[0][0])},{fmt_ts(g[-1][1])},Cap,,0,0,0,,{card_text}")
 
-    content = build_ass_header(preset) + "\n".join(lines) + "\n"
+    content = build_ass_header(preset, hook_margin_v=hook_margin_v) + "\n".join(lines) + "\n"
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w", encoding="utf-8-sig") as f:
         f.write(content)
 
-    logger.info(f"Generated ASS karaoke subtitles ({len(lines)} lines): {output_path}")
+    logger.info(f"Generated ASS subtitles with hook ('{final_hook}'): {output_path}")
     return os.path.abspath(output_path)
 
 
