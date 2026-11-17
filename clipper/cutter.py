@@ -9,18 +9,29 @@ import numpy as np
 
 from .captions import escape_ffmpeg_ass_path
 from .config import load_config
-from .facecam import compute_gameplay_crop, detect_facecam
+from .facecam import compute_gameplay_crop, detect_facecam, expand_box_with_padding
 from .process_manager import check_cancelled_or_paused, run_tracked_command
 from .utils import get_ffmpeg_path
 
 logger = logging.getLogger("clipper.cutter")
 
 
-def get_video_encoder_flags(use_cpu: bool = False) -> List[str]:
-    """Return FFmpeg video encoder parameters for NVENC or libx264 CPU fallback."""
+def get_video_encoder_flags(use_cpu: bool = False, intermediate: bool = False) -> List[str]:
+    """FFmpeg video encoder settings for NVENC (GPU) or libx264 (CPU).
+
+    Final clips use high-quality VBR (platforms re-compress uploads, so give them a clean
+    source). `intermediate` is for the temporary rough cut: near-lossless so the final
+    render doesn't stack a second round of compression on top.
+    """
     if use_cpu:
-        return ["-c:v", "libx264", "-preset", "fast", "-crf", "20"]
-    return ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "21"]
+        if intermediate:
+            return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14"]
+        return ["-c:v", "libx264", "-preset", "medium", "-crf", "17", "-profile:v", "high"]
+    if intermediate:
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "15", "-b:v", "0"]
+    return ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19", "-b:v", "0",
+            "-maxrate", "25M", "-bufsize", "50M", "-profile:v", "high", "-spatial-aq", "1",
+            "-temporal-aq", "1", "-rc-lookahead", "32", "-bf", "3"]
 
 
 def get_loudnorm_audio_filter(
@@ -183,7 +194,7 @@ def cut_rough_clip(
     duration = max(1.0, end_sec - start_sec)
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    encoder_flags = get_video_encoder_flags(use_cpu)
+    encoder_flags = get_video_encoder_flags(use_cpu, intermediate=True)
 
     cmd = [
         ffmpeg_bin, "-y",
@@ -192,7 +203,7 @@ def cut_rough_clip(
         "-t", str(round(duration, 3)),
         *encoder_flags,
         "-c:a", "aac",
-        "-b:a", "160k",
+        "-b:a", "192k",
         os.path.abspath(output_path)
     ]
 
@@ -281,23 +292,38 @@ def render_vertical_clip(
     # Build base video filter complex according to layout
     filter_parts: List[str] = []
 
+    L = "flags=lanczos"
+    # Blurred, darkened copy of the clip filling the whole 9:16 frame (behind everything)
+    BG = ("scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
+          "gblur=sigma=12,eq=brightness=-0.18:saturation=1.15,"
+          f"scale=1080:1920:{L},setsar=1")
+
     if active_layout == "split":
+        # Facecam + gameplay. The 9:16 frame is split into 10 bands: the top and bottom
+        # band hold the hook / captions over a blurred fill, the middle 8 are two
+        # 1080x768 halves (cam on top, gameplay below). Less upscaling than a 50/50 split
+        # of the full height, so both halves stay sharp.
+        band = 192
+        half = (1920 - 2 * band) // 2  # 768
         padded_box = facecam_info.get("padded_box") if facecam_info else None
         corner = facecam_info.get("corner", "top_right") if facecam_info else "top_right"
 
         if padded_box:
             fx, fy, fw, fh = padded_box
         else:
-            # Sane default top-right corner
             fw, fh = int(src_w * 0.28), int(src_h * 0.35)
             fx, fy = max(0, src_w - fw), 0
-
-        gx, gy, gw, gh = compute_gameplay_crop(src_w, src_h, corner)
+        # Re-fit the cam box to the half's aspect so nothing gets squashed
+        fx, fy, fw, fh = expand_box_with_padding((fx, fy, fw, fh), src_w, src_h, padding=0.0,
+                                                 target_aspect=1080.0 / half)
+        gx, gy, gw, gh = compute_gameplay_crop(src_w, src_h, corner, target_aspect=1080.0 / half)
 
         filter_parts.append(
-            f"[0:v] crop={fw}:{fh}:{fx}:{fy},scale=1080:640:force_original_aspect_ratio=increase,crop=1080:640,setsar=1 [top_face]; "
-            f"[0:v] crop={gw}:{gh}:{gx}:{gy},scale=1080:1280:force_original_aspect_ratio=increase,crop=1080:1280,setsar=1 [bot_game]; "
-            f"[top_face][bot_game] vstack=inputs=2 [v_base]"
+            "[0:v] split=3 [s_bg][s_cam][s_game]; "
+            f"[s_bg] {BG} [bg]; "
+            f"[s_cam] crop={fw}:{fh}:{fx}:{fy},scale=1080:{half}:force_original_aspect_ratio=increase:{L},crop=1080:{half},setsar=1 [top_face]; "
+            f"[s_game] crop={gw}:{gh}:{gx}:{gy},scale=1080:{half}:force_original_aspect_ratio=increase:{L},crop=1080:{half},setsar=1 [bot_game]; "
+            f"[bg][top_face] overlay=0:{band} [b1]; [b1][bot_game] overlay=0:{band + half} [v_base]"
         )
     elif active_layout in ("irl", "face") and (facecam_info or {}).get("track"):
         # Moving 9:16 window that follows the main person (IRL / camera streams)
@@ -305,7 +331,7 @@ def render_vertical_clip(
         crop_w = min(src_w, int(round(crop_h * 9 / 16 / 2)) * 2)
         x_expr = build_pan_expression(facecam_info["track"], crop_w, src_w)
         filter_parts.append(
-            f"[0:v] crop={crop_w}:{crop_h}:x='{x_expr}':y=0,scale=1080:1920,setsar=1 [v_base]"
+            f"[0:v] crop={crop_w}:{crop_h}:x='{x_expr}':y=0,scale=1080:1920:{L},setsar=1 [v_base]"
         )
     elif active_layout in ("face", "irl"):
         face_box = facecam_info.get("face_box") if facecam_info else None
@@ -325,26 +351,34 @@ def render_vertical_clip(
         crop_y = max(0, min(src_h - crop_h, cy - crop_h // 2))
 
         filter_parts.append(
-            f"[0:v] crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920,setsar=1 [v_base]"
+            f"[0:v] crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920:{L},setsar=1 [v_base]"
         )
     else:
-        # Default 'gameplay': 16:9 gameplay fit in center with blurred background
-        # Center-crop the gameplay a little (default 4:3) so it is bigger on a phone screen
+        # 'gameplay' = Framed: the whole picture sits in the middle band (no stretching,
+        # no zoom-blur), on top of a blurred copy of itself that fills the screen.
         fc_cfg = load_config().get("facecam", {})
         try:
-            aw, ah = [float(x) for x in str(fc_cfg.get("gameplay_aspect", "4:3")).split(":")]
+            aw, ah = [float(x) for x in str(fc_cfg.get("gameplay_aspect", "16:9")).split(":")]
             g_aspect = max(9 / 16, min(16 / 9, aw / ah))
         except Exception:
-            g_aspect = 4 / 3
+            g_aspect = 16 / 9
         fg_h = int(round(1080 / g_aspect / 2) * 2)
         filter_parts.append(
             "[0:v] split [main_fg][main_bg]; "
-            "[main_bg] scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5,eq=brightness=-0.15 [bg_blur]; "
-            f"[main_fg] crop='min(iw,ih*{g_aspect:.4f})':ih,scale=1080:{fg_h},setsar=1 [fg_game]; "
+            f"[main_bg] {BG} [bg_blur]; "
+            f"[main_fg] crop='min(iw,ih*{g_aspect:.4f})':ih,scale=1080:{fg_h}:{L},setsar=1 [fg_game]; "
             "[bg_blur][fg_game] overlay=(W-w)/2:(H-h)/2 [v_base]"
         )
 
-    curr_v = "[v_base]"
+    # Gentle clean-up: light denoise + light sharpen (never harsh)
+    enh = str(load_config().get("polish", {}).get("enhance", "light")).lower()
+    if enh in ("light", "on", "true"):
+        filter_parts.append("[v_base] hqdn3d=1.2:1.2:3:3,unsharp=5:5:0.55:5:5:0.0 [v_enh]")
+        base_label = "[v_enh]"
+    else:
+        base_label = "[v_base]"
+
+    curr_v = base_label
 
     # Burn in ASS captions if present
     if ass_path and os.path.isfile(ass_path):

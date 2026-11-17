@@ -48,7 +48,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "box_padding": 1.0,
         "fullscreen_face_ratio": 0.22,
         "facecam_max_drift": 0.03,
-        "gameplay_aspect": "4:3",
+        "gameplay_aspect": "16:9",
         "split_facecam_height": 640,
         "gameplay_blur_background": True,
     },

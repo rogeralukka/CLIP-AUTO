@@ -647,15 +647,12 @@ def download_video_section(
             raise RuntimeError(f"Twitch section download failed with code {ret}")
         return section_dest, offset
 
-    # YouTube / Kick section download via yt-dlp
-    if quality == "1080p":
-        format_selector = "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/b[height<=1080]/best"
-    elif quality == "720p":
-        format_selector = "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/b[height<=720]/best"
-    elif quality == "480p":
-        format_selector = "bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480][ext=mp4]/b[height<=480]/best"
-    else:
-        format_selector = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best"
+    # YouTube / Kick section download via yt-dlp.
+    # Take the best stream up to the chosen height (VP9/AV1 too, they look better than
+    # YouTube's H.264 at the same resolution); avoid HDR, which would need tone-mapping.
+    height = {"1080p": 1080, "720p": 720, "480p": 480}.get(quality, 1080)
+    format_selector = f"bv*[height<={height}]+ba/b[height<={height}]/bv*+ba/b"
+    sort_order = f"res:{height},fps,hdr:SDR,vbr"
 
     time_range = f"*{format_section_timestamp(actual_start)}-{format_section_timestamp(actual_end)}"
     cmd = get_ytdlp_cmd(input_source) + [
@@ -663,7 +660,11 @@ def download_video_section(
         # Without this, sections start on the previous keyframe and the
         # computed offset (and therefore the captions) drift by seconds.
         "--force-keyframes-at-cuts",
+        # Cutting exactly re-encodes the piece; yt-dlp would use ffmpeg's defaults
+        # (CRF 23 = visibly soft). Re-encode near-lossless instead.
+        "--downloader-args", "ffmpeg_o:-c:v libx264 -preset veryfast -crf 14 -pix_fmt yuv420p -c:a aac -b:a 192k",
         "-f", format_selector,
+        "-S", sort_order,
         "--merge-output-format", "mp4",
         "--newline",
         "-o", section_dest,

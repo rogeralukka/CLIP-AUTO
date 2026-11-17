@@ -194,6 +194,67 @@ def judge_single_moment(
     return None
 
 
+def refine_boundaries_with_llm(
+    moment: Dict[str, Any],
+    full_transcript_data: Optional[Dict[str, Any]],
+    endpoint: str,
+    model: str,
+    timeout: float,
+    min_len: float = 15.0,
+    max_len: float = 90.0,
+) -> bool:
+    """Ask the local model where the story around this moment starts and where it is over.
+
+    The model sees numbered sentences with timestamps and picks the first and last sentence
+    a viewer needs to understand what happened. Updates moment start/end in place; returns
+    True if it changed them.
+    """
+    from .signals import build_sentences
+    words = (full_transcript_data or {}).get("words") or []
+    if not words:
+        return False
+    peak = float(moment.get("peak_second") or (moment["start"] + moment["end"]) / 2.0)
+    lo, hi = peak - (max_len + 10.0), peak + 50.0
+    near = [w for w in words if lo <= float(w["start"]) <= hi]
+    sents = build_sentences(near)
+    if len(sents) < 3:
+        return False
+    peak_idx = min(range(len(sents)), key=lambda i: 0 if sents[i]["start"] <= peak <= sents[i]["end"] + 1.0
+                   else abs(sents[i]["start"] - peak))
+    lines = "\n".join(f"[{i}] ({s['start'] - peak:+.0f}s) {s['text']}" for i, s in enumerate(sents))
+    prompt = f"""You cut livestream clips into YouTube Shorts. Below is the transcript around a hype
+moment (times are seconds relative to the moment, sentence [{peak_idx}] is where it peaks).
+
+Pick the FIRST sentence a new viewer needs to understand what is going on (the start of this
+story/topic, not mid-conversation), and the LAST sentence where this story is clearly over
+(after the reaction, before a new topic starts). The clip must be {min_len:.0f}-{max_len:.0f}
+seconds long and must contain sentence [{peak_idx}].
+
+{lines}
+
+Reply ONLY with JSON: {{"first": <int>, "last": <int>, "topic": "<what happens, max 10 words>", "complete": <true if the story is fully inside>}}"""
+    raw = call_ollama_generate(prompt, endpoint=endpoint, model=model, timeout=timeout)
+    if not raw:
+        return False
+    try:
+        m = re.search(r"\{[\s\S]*\}", raw)
+        data = json.loads(m.group(0) if m else raw)
+        a, b = int(data["first"]), int(data["last"])
+    except Exception:
+        return False
+    if not (0 <= a <= peak_idx <= b < len(sents)):
+        return False
+    st = max(0.0, sents[a]["start"] - 0.25)
+    nxt = sents[b + 1]["start"] if b + 1 < len(sents) else sents[b]["end"] + 1.0
+    en = min(sents[b]["end"] + 0.6, nxt - 0.05)
+    if not (min_len - 1.0 <= en - st <= max_len + 1.0):
+        return False
+    moment["start"], moment["end"] = round(st, 2), round(en, 2)
+    moment["topic"] = str(data.get("topic", ""))[:80]
+    moment["story_complete"] = bool(data.get("complete", True))
+    return True
+
+
 def rank_moments_with_llm(
     moments: List[Dict[str, Any]],
     top_n: Optional[int] = None,
@@ -241,6 +302,14 @@ def rank_moments_with_llm(
     weight_hype = float(llm_cfg.get("weight_hype", 0.50))
 
     for m in candidates:
+        if llm_cfg.get("refine_boundaries", True):
+            lim = m.get("len_limits") or (15.0, 90.0)
+            try:
+                if refine_boundaries_with_llm(m, full_transcript_data, endpoint, model_name, timeout,
+                                              min_len=float(lim[0]), max_len=float(lim[1])):
+                    logger.info(f"LLM set story bounds {m['start']:.1f}-{m['end']:.1f}: {m.get('topic', '')}")
+            except Exception as e:
+                logger.debug(f"Boundary refine failed: {e}")
         st = m["start"]
         et = m["end"]
 
@@ -280,6 +349,11 @@ def rank_moments_with_llm(
             # Normalized hype score (scale 0-10)
             norm_hype = min(10.0, max(0.0, float(m.get("score", 0.0)) * 2.0))
             blended = weight_llm * eval_res["score"] + weight_hype * norm_hype
+            # A clip that needs earlier context, or stops before the payoff, ranks lower
+            if not eval_res.get("standalone", True):
+                blended -= 2.0
+            if not eval_res.get("payoff_inside", True):
+                blended -= 1.5
             m["blended_score"] = round(blended, 2)
         else:
             # Fallback to pure hype score

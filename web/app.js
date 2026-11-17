@@ -73,8 +73,8 @@ async function renderNew() {
         <div class="col"><span class="lbl">Sensitivity</span>
           <div class="seg acc" id="sens">${[["2.5", "Picky"], ["2.0", "Normal"], ["1.5", "Loose"]].map(([v, l]) => `<button data-v="${v}" class="${(d.sens || "2.0") === v ? "on" : ""}">${l}</button>`).join("")}</div></div>
         <div class="col" style="grid-column:1/-1"><span class="lbl">Stream type</span>
-          <div class="seg acc" id="ltype">${[["auto", "Auto-detect"], ["split", "Game + facecam"], ["gameplay", "Game, no cam"], ["irl", "IRL / camera"], ["face", "Just chatting"]].map(([v, l]) => `<button data-v="${v}" class="${(d.ltype || "auto") === v ? "on" : ""}">${l}</button>`).join("")}</div>
-          <span class="muted small">Auto looks at each clip: a fixed corner cam gets the split layout, people on camera get a crop that follows them, plain gameplay gets the blurred fill.</span></div>
+          <div class="seg acc" id="ltype">${[["auto", "Auto-detect"], ["split", "Game + facecam"], ["gameplay", "Framed (one picture)"], ["irl", "Follow person"], ["face", "Face crop"]].map(([v, l]) => `<button data-v="${v}" class="${(d.ltype || "auto") === v ? "on" : ""}">${l}</button>`).join("")}</div>
+          <span class="muted small">Auto looks at each clip: a corner facecam gets the split (cam on top, game below); anything else is Framed — the whole picture in the middle over a blurred copy, so nothing is stretched.</span></div>
         <div class="col"><span class="lbl">Video quality</span><select id="quality">${["1080p", "720p", "480p"].map(q => `<option ${d.quality === q ? "selected" : ""}>${q}</option>`).join("")}</select></div>
         <div class="col"><span class="lbl">Options</span>
           <label class="row small"><span class="switch"><input type="checkbox" id="review" ${d.review === false ? "" : "checked"}><span></span></span>Review moments before rendering</label>
@@ -314,7 +314,7 @@ function drawClips(job) {
         ${(qc.flags || []).length ? `<div class="small" style="color:var(--warn)">${(qc.flags || []).map(esc).join("<br>")}</div>` : ""}
         ${c.error ? `<div class="small" style="color:var(--bad)">${esc(c.error)}</div>` : ""}
         <div class="col"><span class="lbl">Hook title</span><input type="text" data-hook value="${esc(c.hook_title || "")}" maxlength="60" placeholder="No hook"></div>
-        <div class="row" style="justify-content:space-between"><div class="seg" data-lay>${[["split", "Split"], ["gameplay", "Gameplay"], ["irl", "Follow"], ["face", "Face"]].map(([v, l]) => `<button data-v="${v}" class="${lay === v ? "on" : ""}">${l}</button>`).join("")}</div>
+        <div class="row" style="justify-content:space-between"><div class="seg" data-lay>${[["split", "Split"], ["gameplay", "Framed"], ["irl", "Follow"], ["face", "Face"]].map(([v, l]) => `<button data-v="${v}" class="${lay === v ? "on" : ""}">${l}</button>`).join("")}</div>
           <button class="btn sm" data-rr ${c.busy ? "disabled" : ""}>Re-render</button></div>
         <div class="acts"><button class="btn keep ${c.status === "KEPT" ? "on" : ""}" data-st="KEPT">✓ Keep</button><button class="btn rej ${c.status === "REJECTED" ? "on" : ""}" data-st="REJECTED">✕ Reject</button></div>
         <div class="col"><div class="tabs" data-tabs>${[["youtube", "Shorts"], ["tiktok", "TikTok"], ["reels", "Reels"], ["x", "X"]].map(([k, l], t) => `<button class="btn sm ${t ? "ghost" : ""}" data-tab="${k}">${l}</button>`).join("")}</div>
@@ -438,7 +438,7 @@ async function renderSettings() {
     <div class="card col" style="gap:16px">
       <div class="row" style="justify-content:space-between"><div><b>Progress bar</b><div class="muted small">Thin bar along the bottom that fills as the clip plays. Keeps people watching to the end.</div></div>
         <label class="switch"><input type="checkbox" id="s-bar" ${s.polish.progress_bar ? "checked" : ""}><span></span></label></div>
-      <div class="col"><span class="lbl">Gameplay layout crop</span><div class="seg acc" id="s-asp">${[["16:9", "Full frame"], ["4:3", "Slight zoom"], ["1:1", "Big zoom"]].map(([v, l]) => `<button data-v="${v}" class="${s.gameplay_aspect === v ? "on" : ""}">${l}</button>`).join("")}</div>
+      <div class="col"><span class="lbl">Framed layout zoom</span><div class="seg acc" id="s-asp">${[["16:9", "Full frame"], ["4:3", "Slight zoom"], ["1:1", "Big zoom"]].map(([v, l]) => `<button data-v="${v}" class="${s.gameplay_aspect === v ? "on" : ""}">${l}</button>`).join("")}</div>
         <span class="muted small">How much of the 16:9 game frame to keep in the gameplay layout. More zoom = bigger on a phone.</span></div>
       <hr><button class="btn pri" id="s-save">Save settings</button>
     </div>

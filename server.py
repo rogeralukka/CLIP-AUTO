@@ -90,7 +90,7 @@ def system():
         "whisper_model": cfg.get("audio", {}).get("whisper_model", "large-v3"),
         "presets": presets,
         "polish": {"progress_bar": cfg.get("polish", {}).get("progress_bar", True)},
-        "gameplay_aspect": cfg.get("facecam", {}).get("gameplay_aspect", "4:3"),
+        "gameplay_aspect": cfg.get("facecam", {}).get("gameplay_aspect", "16:9"),
     }
 
 

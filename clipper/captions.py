@@ -199,8 +199,10 @@ def make_ass(
 
     # Adjust vertical margin based on layout to avoid overlapping facecam
     if layout == "split":
-        preset["margin_v"] = preset.get("split_margin_v", 360)
-        hook_margin_v = 680  # Top of gameplay section below 640px facecam
+        # Split = 192px band / cam 768 / game 768 / 192px band: captions in the bottom band,
+        # hook in the top band, so neither covers the cam or the gameplay
+        preset["margin_v"] = preset.get("split_margin_v", 52)
+        hook_margin_v = 36
     else:
         if layout == "gameplay":
             preset["margin_v"] = preset.get("gameplay_margin_v", 480)

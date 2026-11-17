@@ -423,19 +423,24 @@ def detect_facecam(
     mcy = (med_box[1] + med_box[3] / 2.0) / frame_h
     near_edge = mcx < 0.35 or mcx > 0.65 or mcy < 0.30 or mcy > 0.70
 
+    # One picture, no separate cam: default to "gameplay" (Framed: the whole 16:9 picture in
+    # the middle over a blurred fill). Cropping a 1080p frame to 9:16 and blowing it up to
+    # full screen looked soft; "irl" (Follow) / "face" stay available per clip.
+    single = str(fc_cfg.get("single_source_layout", "gameplay"))
+
     if presence_ratio >= thresh and stable and not is_big and near_edge and other_ratio < 0.35:
         stream_type, layout, found = "gaming_facecam", "split", True
     elif presence_ratio >= thresh and is_big and stable:
         # One big face that stays put: Just Chatting / reaction cam filling the screen
-        stream_type, layout, found = "just_chatting", "face", True
+        stream_type, layout, found = "just_chatting", single, True
     elif any_face_ratio >= 0.30:
         # People on camera, moving around or several of them: IRL / event stream.
         # Follow the main person with a moving 9:16 crop instead of a split.
-        stream_type, layout, found = "irl", "irl", False
+        stream_type, layout, found = "irl", single, False
     else:
         stream_type, layout, found = "gaming", "gameplay", False
 
-    track = build_subject_track(all_detections, frame_w, frame_h) if layout in ("irl", "face") else []
+    track = build_subject_track(all_detections, frame_w, frame_h) if stream_type in ("irl", "just_chatting") else []
 
     logger.info(
         f"Stream type: {stream_type} (layout={layout}; main face presence={presence_ratio:.0%}, "
@@ -519,12 +524,11 @@ def compute_gameplay_crop(
         crop_h = int(crop_w / target_aspect)
 
     # Bias x based on face corner to avoid duplicating facecam
+    # Push the crop as far from the cam as possible so the cam doesn't show twice
     if "right" in face_corner:
-        # Bias left: place crop at 10% from left
-        x = max(0, int((frame_width - crop_w) * 0.25))
+        x = 0
     elif "left" in face_corner:
-        # Bias right: place crop at 75% from left
-        x = min(frame_width - crop_w, int((frame_width - crop_w) * 0.75))
+        x = frame_width - crop_w
     else:
         # Center crop
         x = (frame_width - crop_w) // 2

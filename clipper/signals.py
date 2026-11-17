@@ -406,6 +406,90 @@ def _sentence_marks(words: List[Dict[str, Any]], lo: float, hi: float, pause: fl
     return starts, ends
 
 
+_STOP = set("""a an the and or but so if then than that this these those it its it's i i'm im me my we
+our you your he him his she her they them their is are was were be been being am do does did done
+have has had of to in on at for with from by as up out about into over just like yeah yes no okay ok
+oh uh um hmm right well really very can could would should will gonna wanna got get go going know
+what when where who how why not dont don't there here all some any one two bro dude man""".split())
+
+
+def build_sentences(words: List[Dict[str, Any]], pause: float = 0.6) -> List[Dict[str, Any]]:
+    """Group transcript words into sentences / thoughts (split on . ! ? and on pauses)."""
+    sents: List[Dict[str, Any]] = []
+    cur: List[Dict[str, Any]] = []
+    for w in words:
+        if cur and float(w.get("start", 0.0)) - float(cur[-1].get("end", 0.0)) >= pause:
+            sents.append(cur)
+            cur = []
+        cur.append(w)
+        if str(w.get("word", "")).strip().endswith((".", "!", "?")):
+            sents.append(cur)
+            cur = []
+    if cur:
+        sents.append(cur)
+    out = []
+    prev_end = None
+    for sw in sents:
+        st, en = float(sw[0]["start"]), float(sw[-1]["end"])
+        text = " ".join(str(x.get("word", "")).strip() for x in sw)
+        toks = [t for t in re.findall(r"\w+", text.lower()) if len(t) > 2 and t not in _STOP]
+        out.append({"start": st, "end": en, "text": text, "tokens": toks,
+                    "gap_before": (st - prev_end) if prev_end is not None else 9.0})
+        prev_end = en
+    return out
+
+
+def topic_boundaries(sentences: List[Dict[str, Any]], k: int = 4) -> List[Dict[str, float]]:
+    """Find where the conversation changes topic (TextTiling-style, no model needed).
+
+    For each gap between sentences, compare the words used in the k sentences before with
+    the k after. A sharp drop in shared words (plus a longer pause) means a new topic or a
+    new story starts there. Returns [{"start": t_new, "prev_end": t, "strength": s}, ...].
+    """
+    n = len(sentences)
+    if n < 2 * k + 1:
+        return []
+    from collections import Counter
+
+    def bag(lo: int, hi: int) -> Counter:
+        c: Counter = Counter()
+        for snt in sentences[max(0, lo):min(n, hi)]:
+            c.update(snt["tokens"])
+        return c
+
+    sims = np.zeros(n, dtype=np.float32)
+    for i in range(1, n):
+        a, b = bag(i - k, i), bag(i, i + k)
+        if not a or not b:
+            sims[i] = 0.0
+            continue
+        dot = sum(a[t] * b[t] for t in a if t in b)
+        na = math.sqrt(sum(v * v for v in a.values()))
+        nb = math.sqrt(sum(v * v for v in b.values()))
+        sims[i] = dot / (na * nb) if na and nb else 0.0
+
+    depth = np.zeros(n, dtype=np.float32)
+    for i in range(1, n):
+        l = i
+        while l - 1 >= 1 and sims[l - 1] >= sims[l]:
+            l -= 1
+        r = i
+        while r + 1 < n and sims[r + 1] >= sims[r]:
+            r += 1
+        depth[i] = (sims[l] - sims[i]) + (sims[r] - sims[i])
+        depth[i] += 0.25 * min(1.0, max(0.0, sentences[i]["gap_before"] - 0.6) / 2.0)
+
+    vals = depth[1:]
+    thr = float(vals.mean() + 0.5 * vals.std()) if len(vals) else 1.0
+    out = []
+    for i in range(1, n):
+        is_local_max = depth[i] >= depth[i - 1] and (i + 1 >= n or depth[i] >= depth[i + 1])
+        if depth[i] >= thr and is_local_max:
+            out.append({"start": sentences[i]["start"], "prev_end": sentences[i - 1]["end"],
+                        "strength": round(float(depth[i]), 3)})
+    return out
+
+
 def snap_moment_boundaries(
     peak_time: float,
     stream_duration: float,
@@ -417,6 +501,7 @@ def snap_moment_boundaries(
     before: float = 20.0,
     after: float = 20.0,
     hype_curve: Optional[np.ndarray] = None,
+    topics: Optional[List[Dict[str, float]]] = None,
 ) -> Tuple[float, float]:
     """Choose clip boundaries around a hype peak so the clip starts and ends cleanly.
 
@@ -459,6 +544,20 @@ def snap_moment_boundaries(
         end = (after_settle[0] if after_settle else max(ends, key=lambda c: c[1]))[0]
     else:
         end = settle + 1.0
+
+    # 3b. Context: if we know where topics/stories change, start where the current story
+    # starts and stop where it is over, so a viewer gets the whole thing.
+    if topics:
+        setup_min = 8.0
+        starts_t = [tb for tb in topics
+                    if peak_time - (max_length - 8.0) <= tb["start"] <= peak_time - setup_min]
+        if starts_t:
+            tb = max(starts_t, key=lambda x: x["start"])  # start of the story the peak is in
+            start = max(0.0, tb["start"] - 0.25)
+        ends_t = [tb for tb in topics if max(peak_time + 5.0, settle - 8.0) <= tb["prev_end"] <= start + max_length]
+        if ends_t:
+            tb = min(ends_t, key=lambda x: x["prev_end"])  # the story wraps up here
+            end = min(tb["prev_end"] + 0.6, tb["start"] - 0.05)
 
     start = max(0.0, start)
     end = min(stream_duration, end)

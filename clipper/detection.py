@@ -413,6 +413,16 @@ def find_moments(
     max_lead = cfg.get("signals", {}).get("max_lead_seconds", 5.0)
     max_trail = cfg.get("signals", {}).get("max_trail_seconds", 5.0)
 
+    # Topic / story changes across the whole stream (used so clips cover a whole story)
+    topics: List[Dict[str, float]] = []
+    if full_transcript_data and full_transcript_data.get("words"):
+        try:
+            from .signals import build_sentences, topic_boundaries
+            topics = topic_boundaries(build_sentences(full_transcript_data["words"]))
+            logger.info(f"Found {len(topics)} topic changes in the transcript.")
+        except Exception as e:
+            logger.warning(f"Topic segmentation failed ({e}); using sentence boundaries only.")
+
     for p_sec, sc in selected_peaks:
         peak_center = float(p_sec)
 
@@ -428,6 +438,7 @@ def find_moments(
             before=float(before),
             after=float(after),
             hype_curve=composite_curve,
+            topics=topics,
         )
 
         # Build signal breakdown dictionary for this peak second
