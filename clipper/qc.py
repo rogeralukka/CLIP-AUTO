@@ -222,7 +222,7 @@ def generate_platform_metadata(
     campaign: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """Generate platform-specific title, description, and hashtags for YouTube Shorts, TikTok, Reels, X."""
-    title = (hook_title or "Insane Stream Moment").strip()
+    title = (hook_title or "").strip()
     hashtags_list = campaign.get("required_hashtags", []) if campaign else []
     disclosure = campaign.get("disclosure_text", "") if campaign else ""
 
@@ -233,24 +233,50 @@ def generate_platform_metadata(
     # YouTube Shorts: Title <100 chars
     yt_tag = "#Shorts"
     combined_tags = f"{yt_tag} {tag_str}".strip()
-    max_title_len = max(10, 95 - len(combined_tags))
-    clean_yt_title = title[:max_title_len].strip()
-    yt_full_title = f"{clean_yt_title} {combined_tags}".strip()
+    if title:
+        max_title_len = max(10, 95 - len(combined_tags))
+        clean_yt_title = title[:max_title_len].strip()
+        yt_full_title = f"{clean_yt_title} {combined_tags}".strip()
+    else:
+        yt_full_title = combined_tags
 
-    yt_description = f"{title}\n\n{transcript[:300]}...\n\n{tag_str}\n{disclosure}".strip()
+    desc_parts = []
+    if title:
+        desc_parts.append(title)
+    if transcript:
+        desc_parts.append(f"{transcript[:300]}...")
+    if tag_str:
+        desc_parts.append(tag_str)
+    if disclosure:
+        desc_parts.append(disclosure)
+    yt_description = "\n\n".join(desc_parts).strip()
 
     # TikTok: Caption < 150 chars
     tt_suffix = f" {tag_str} {disclosure}".strip()
-    max_tt_title = max(10, 145 - len(tt_suffix))
-    tt_caption = f"{title[:max_tt_title].strip()} {tt_suffix}".strip()
+    if title:
+        max_tt_title = max(10, 145 - len(tt_suffix))
+        tt_caption = f"{title[:max_tt_title].strip()} {tt_suffix}".strip()
+    else:
+        tt_caption = tt_suffix
 
     # Instagram Reels: Caption
-    reels_caption = f"{title}\n.\n{tag_str}\n{disclosure}".strip()
+    reels_parts = []
+    if title:
+        reels_parts.append(title)
+        reels_parts.append(".")
+    if tag_str:
+        reels_parts.append(tag_str)
+    if disclosure:
+        reels_parts.append(disclosure)
+    reels_caption = "\n".join(reels_parts).strip()
 
     # X (Twitter): Tweet < 280 chars
     x_suffix = f"\n\n{tag_str} {disclosure}".strip()
-    max_x_title = max(10, 275 - len(x_suffix))
-    x_tweet = f"{title[:max_x_title].strip()} {x_suffix}".strip()
+    if title:
+        max_x_title = max(10, 275 - len(x_suffix))
+        x_tweet = f"{title[:max_x_title].strip()} {x_suffix}".strip()
+    else:
+        x_tweet = x_suffix.strip()
 
     return {
         "youtube_title": yt_full_title,
