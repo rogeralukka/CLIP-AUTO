@@ -21,6 +21,11 @@ This document provides a comprehensive log of all architectural improvements, up
   - Implemented `download_audio_and_chat()` to download audio-only upfront (`TwitchDownloaderCLI videodownload -o <id>.m4a` and `yt-dlp -f "ba[ext=m4a]/ba/bestaudio"`), saving bandwidth and processing time.
   - Added native Kick stream support (`is_kick_url()` and yt-dlp Kick extractor).
   - Implemented `download_video_section()` to fetch only the required video ranges with configurable padding (`section_padding_seconds`), avoiding full video downloads before moment selection.
+  - **YouTube Anti-Bot & SABR Streaming Bypass**:
+    - Discovered Node.js runtime and registered via `--js-runtimes node:<path>` in `yt-dlp` to execute YouTube n-sig decoders.
+    - Added automatic `--extractor-args "youtube:player_client=android,web"` to bypass "Sign in to confirm you're not a bot" challenge on live stream VODs.
+    - Updated audio download format to `-f "ba[ext=m4a]/ba/bestaudio/best" -x --audio-format m4a` so it extracts audio cleanly even when YouTube SABR experiment restricts streams to combined format 18.
+    - Updated `resume_job()` in `clipper/queue.py` to reset the error state upon retry.
 - **`clipper/transcription.py`**:
   - Implemented `transcribe_full_audio()` to transcribe the entire stream audio in a single pass with word timestamps, saving output to `downloads/<vod_id>/transcript.json`.
   - Implemented `slice_transcript()` to extract and offset word timestamps per clip from the full transcript cache.

@@ -1,4 +1,5 @@
 """Downloader module with audio-first stream ingestion, section clipping, and quality inspection."""
+import glob
 import json
 import logging
 import math
@@ -140,6 +141,44 @@ def get_ytdlp_path() -> str:
     return "yt-dlp"
 
 
+def get_node_runtime_path() -> Optional[str]:
+    """Find Node.js executable on the system for yt-dlp JS runtime extraction."""
+    found = shutil.which("node")
+    if found:
+        return found
+    common_paths = [
+        r"C:\Program Files\nodejs\node.exe",
+        r"C:\Program Files (x86)\nodejs\node.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\node\node.exe"),
+    ]
+    for p in common_paths:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def get_ytdlp_cmd(input_source: Optional[str] = None) -> List[str]:
+    """Return yt-dlp binary with standard flags for JS runtime and YouTube anti-bot workarounds."""
+    ytdlp_bin = get_ytdlp_path()
+    cmd = [ytdlp_bin]
+
+    node_bin = get_node_runtime_path()
+    if node_bin:
+        cmd.extend(["--js-runtimes", f"node:{node_bin}"])
+
+    if input_source and is_youtube(input_source):
+        cmd.extend(["--extractor-args", "youtube:player_client=android,web"])
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for cand in ("cookies.txt", os.path.join("config", "cookies.txt")):
+        cpath = os.path.join(base_dir, cand)
+        if os.path.isfile(cpath):
+            cmd.extend(["--cookies", cpath])
+            break
+
+    return cmd
+
+
 def get_available_qualities(input_source: str) -> List[Dict[str, Any]]:
     """Inspect available resolutions and estimated file sizes for a stream URL or file."""
     if not input_source or not input_source.strip():
@@ -158,10 +197,9 @@ def get_available_qualities(input_source: str) -> List[Dict[str, Any]]:
             }]
         return []
 
-    ytdlp_bin = get_ytdlp_path()
     try:
-        cmd = [ytdlp_bin, "-J", "--no-playlist", input_source]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        cmd = get_ytdlp_cmd(input_source) + ["-J", "--no-playlist", input_source]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
         if res.returncode == 0 and res.stdout:
             data = json.loads(res.stdout)
             duration = data.get("duration") or 0
@@ -405,8 +443,6 @@ def download_audio_and_chat(
         return audio_dest, final_chat, vod_id
 
     # YouTube / Kick
-    ytdlp_bin = get_ytdlp_path()
-
     # 1. Download Audio via yt-dlp
     if os.path.isfile(audio_dest) and os.path.getsize(audio_dest) > 1024:
         logger.info(f"Using cached audio: {audio_dest}")
@@ -414,13 +450,15 @@ def download_audio_and_chat(
             progress_callback("download_audio", {"percent": 100.0, "status": "Cached audio ready"})
     else:
         logger.info(f"Downloading audio-only stream ({input_source}) to {audio_dest}...")
-        cmd = [
-            ytdlp_bin,
+        audio_pattern = os.path.join(vod_dir, "audio.%(ext)s")
+        cmd = get_ytdlp_cmd(input_source) + [
             "--continue",
             "--part",
             "--newline",
-            "-f", "ba[ext=m4a]/ba/bestaudio",
-            "-o", audio_dest,
+            "-f", "ba[ext=m4a]/ba/bestaudio/best",
+            "-x",
+            "--audio-format", "m4a",
+            "-o", audio_pattern,
             input_source
         ]
 
@@ -434,6 +472,21 @@ def download_audio_and_chat(
         if ret != 0:
             raise RuntimeError(f"Audio download failed with exit code {ret}")
 
+        # Ensure audio_dest exists and is a valid m4a
+        if not os.path.isfile(audio_dest):
+            for cand in glob.glob(os.path.join(vod_dir, "audio.*")):
+                if not cand.endswith(".part"):
+                    if cand.endswith(".m4a"):
+                        audio_dest = cand
+                        break
+                    else:
+                        ffmpeg_bin = get_ffmpeg_path()
+                        subprocess.run(
+                            [ffmpeg_bin, "-y", "-i", cand, "-vn", "-c:a", "aac", audio_dest],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        )
+                        break
+
     # 2. YouTube Chat & Heatmap
     final_chat = None
     if is_youtube(input_source):
@@ -441,8 +494,8 @@ def download_audio_and_chat(
         # Try fetching heatmap & info json if missing
         if not os.path.isfile(heatmap_dest):
             try:
-                info_cmd = [ytdlp_bin, "-J", "--no-playlist", input_source]
-                res = subprocess.run(info_cmd, capture_output=True, text=True, timeout=20)
+                info_cmd = get_ytdlp_cmd(input_source) + ["-J", "--no-playlist", input_source]
+                res = subprocess.run(info_cmd, capture_output=True, text=True, timeout=25)
                 if res.returncode == 0 and res.stdout:
                     info_data = json.loads(res.stdout)
                     heatmap = info_data.get("heatmap")
@@ -458,8 +511,7 @@ def download_audio_and_chat(
             final_chat = chat_dest
         else:
             raw_chat_prefix = os.path.join(vod_dir, "raw_chat")
-            chat_cmd = [
-                ytdlp_bin,
+            chat_cmd = get_ytdlp_cmd(input_source) + [
                 "--skip-download",
                 "--write-subs",
                 "--sub-langs", "live_chat",
@@ -569,19 +621,17 @@ def download_video_section(
         return section_dest, offset
 
     # YouTube / Kick section download via yt-dlp
-    ytdlp_bin = get_ytdlp_path()
     if quality == "1080p":
-        format_selector = "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/best"
+        format_selector = "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/b[height<=1080]/best"
     elif quality == "720p":
-        format_selector = "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/best"
+        format_selector = "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/b[height<=720]/best"
     elif quality == "480p":
-        format_selector = "bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480][ext=mp4]/best"
+        format_selector = "bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480][ext=mp4]/b[height<=480]/best"
     else:
         format_selector = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best"
 
     time_range = f"*{format_section_timestamp(actual_start)}-{format_section_timestamp(actual_end)}"
-    cmd = [
-        ytdlp_bin,
+    cmd = get_ytdlp_cmd(input_source) + [
         "--download-sections", time_range,
         # Without this, sections start on the previous keyframe and the
         # computed offset (and therefore the captions) drift by seconds.

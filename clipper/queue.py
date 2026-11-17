@@ -220,6 +220,7 @@ def resume_job(job_id: str):
     log_job_message(job_id, "Resuming job execution...")
 
     def _resume(job):
+        job["error"] = None
         if job.get("detected_moments") and job.get("selected_indices") is None and not job.get("auto_render"):
             job["status"] = "AWAITING_SELECTION"
             job["stage_details"] = "Ready for moment review."
