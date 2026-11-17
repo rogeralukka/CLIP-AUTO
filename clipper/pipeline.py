@@ -292,7 +292,7 @@ def render_pipeline_moments(
         step_base_pct = 35 + int(((i - 1) / total) * 60)
 
         # Silence trimming: remove leading / trailing dead air >1s down to 0.3s
-        campaign_min = float(campaign.get("min_length_seconds", 15.0)) if campaign else 15.0
+        campaign_min = float(campaign.get("min_clip_length", campaign.get("min_length_seconds", 15.0))) if campaign else 15.0
         words_in_vod: List[Dict[str, Any]] = []
         if full_transcript_data and full_transcript_data.get("words"):
             words_in_vod = [

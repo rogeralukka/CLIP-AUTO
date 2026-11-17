@@ -365,11 +365,14 @@ def download_audio_and_chat(
                 progress_callback("download_audio", {"percent": 100.0, "status": "Cached audio ready"})
         else:
             logger.info(f"Downloading Twitch audio ({twitch_vid_id}) to {audio_dest}...")
+            # TwitchDownloaderCLI videodownload would fetch the full VIDEO here.
+            # yt-dlp can grab Twitch's audio-only rendition (a few hundred MB).
             cmd = [
-                td_bin, "videodownload",
-                "-u", twitch_vid_id,
+                get_ytdlp_path(),
+                "--continue", "--part", "--newline",
+                "-f", "ba/Audio_Only/audio_only/worst",
                 "-o", audio_dest,
-                "--collision", "Overwrite"
+                f"https://www.twitch.tv/videos/{twitch_vid_id}",
             ]
 
             def on_twitch_audio_line(line: str):
@@ -580,6 +583,9 @@ def download_video_section(
     cmd = [
         ytdlp_bin,
         "--download-sections", time_range,
+        # Without this, sections start on the previous keyframe and the
+        # computed offset (and therefore the captions) drift by seconds.
+        "--force-keyframes-at-cuts",
         "-f", format_selector,
         "--merge-output-format", "mp4",
         "-o", section_dest,

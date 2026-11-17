@@ -60,7 +60,7 @@ class LiveStreamClipper:
         self,
         stream_url: str,
         quality: str = "720p,best",
-        check_interval_seconds: int = 120,
+        check_interval_seconds: int = 30,
         buffer_duration_seconds: int = 900,  # 15 minutes rolling buffer
         output_base_dir: str = "clips/live",
         preset_name: str = "classic_yellow",
@@ -286,7 +286,7 @@ class LiveStreamClipper:
 def run_live_clipping(
     stream_url: str,
     quality: str = "720p,best",
-    interval: int = 120,
+    interval: int = 30,
     preset: str = "classic_yellow",
     use_cpu: bool = False,
     max_iterations: Optional[int] = None,
