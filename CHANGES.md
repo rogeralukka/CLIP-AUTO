@@ -4,6 +4,17 @@ This document provides a comprehensive log of all architectural improvements, up
 
 ---
 
+## 2026-11-18 (night 4): Live mode gets the same cam detection as normal runs
+
+- Live clips were cut with the old bare cam check: no stream-wide cam memory, no layout check, so a green-screen
+  streamer (IShowSpeed) came out as a plain full-picture clip.
+- Live now learns the stream's cams from the last ~2.5 min of the buffer before the first clip (and again every
+  ~10 min while none is known), remembers them in `downloads/live_buffer/<id>/stream_cams.json`, uses the same
+  layout choice as normal runs (split / duo / Framed), and gives earlier clips a second look + re-render when a
+  later look finds a cam they missed.
+- Default capture quality is now 1080p60 -> 720p fallback (a small face at 720p was easier to miss).
+- Tests: `tests/test_live_cams.py`.
+
 ## 2026-11-18 (night 3b): one login per account (its own Chrome profile) + "Open all sites"
 
 - Each account can be tied to its own Chrome profile (dropdown read from Chrome's profile list). Log in once in that

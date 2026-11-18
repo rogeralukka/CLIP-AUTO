@@ -23,7 +23,7 @@ from .config import load_config
 from .cutter import caption_anchor_y, cut_rough_clip, render_vertical_clip
 from .detection import find_moments
 from .downloader import get_vod_id
-from .facecam import detect_facecam
+from .facecam import detect_facecam, merge_known_cams, resolve_layout
 from .qc import generate_platform_metadata, perform_qc_check
 from .transcription import transcribe_clip
 from .utils import get_ffmpeg_path
@@ -116,7 +116,7 @@ class LiveStreamClipper:
     def __init__(
         self,
         stream_url: str,
-        quality: str = "720p,best",
+        quality: str = "1080p60,1080p,720p60,720p,best",
         check_interval_seconds: int = 30,
         buffer_duration_seconds: int = 900,  # 15 minutes rolling buffer
         output_base_dir: str = "clips/live",
@@ -148,6 +148,13 @@ class LiveStreamClipper:
         self.chat: Optional[TwitchChatListener] = None
         self.analysis_window_seconds = 600  # only analyse the last 10 min each check
         self.live_vod_id = f"live_{self.stream_id}"
+        # Same cam memory the normal runs use: an overlay stays put for the whole stream, so a cam
+        # found in one clip (or in the first probe) is remembered for every later clip.
+        from .pipeline import _load_known_cams
+        self.cams_file = os.path.join(self.buffer_dir, "stream_cams.json")
+        self.known_cams: List[Dict[str, Any]] = _load_known_cams(self.buffer_dir)
+        self.clips_done: List[Dict[str, Any]] = []
+        self._checks = 0
 
     def start_capture_process(self) -> bool:
         """Start background stream capture using streamlink or yt-dlp."""
@@ -251,6 +258,7 @@ class LiveStreamClipper:
             return []
 
         logger.info(f"Found {len(new_moments)} NEW hype moment(s) in live stream!")
+        self._probe_cams(curr_duration)
         rendered_clips = []
         preset = load_preset(self.preset_name)
 
@@ -271,9 +279,11 @@ class LiveStreamClipper:
             # Transcribe
             words = transcribe_clip(rough_path, use_cpu=self.use_cpu, cache_dir=self.output_dir)
 
-            # Facecam layout
-            facecam = detect_facecam(rough_path)
-            layout = facecam.get("layout") or "gameplay"
+            # Facecam layout: same checks as a normal run (cutout/green-screen cams, two cams,
+            # stream-wide cam memory)
+            facecam = detect_facecam(rough_path, known_cams=self.known_cams)
+            self._remember_cams(facecam)
+            layout, layout_note = resolve_layout("auto", facecam)
 
             # Hook title & ASS
             hook_title = extract_hook_phrase(words)
@@ -319,9 +329,17 @@ class LiveStreamClipper:
                 "hype_score": m.get("score", 0.0),
                 "hook_title": hook_title,
                 "layout": layout,
+                "layout_note": layout_note,
                 "facecam": facecam,
                 "qc": qc,
                 "platforms": platform_meta,
+                # kept so the clip can be re-rendered if a later look finds a cam this one missed
+                "index": len(self.clips_done) + 1,
+                "rough_path": rough_path,
+                "ass_path": ass_path,
+                "transcript": transcript_text,
+                "preset": self.preset_name,
+                "meta_path": meta_file,
             }
 
             with open(meta_file, "w", encoding="utf-8") as f:
@@ -340,8 +358,57 @@ class LiveStreamClipper:
             record_clipped_moment(self.live_vod_id, start_s, end_s, m.get("score", 0.0))
             logger.info(f"Exported live clip -> {final_path} (QC: {qc['status']})")
             rendered_clips.append(clip_meta)
+            self.clips_done.append(clip_meta)
 
+        self._second_look()
         return rendered_clips
+
+    def _remember_cams(self, facecam: Dict[str, Any]) -> None:
+        import json as _json
+        self.known_cams = merge_known_cams(self.known_cams, (facecam or {}).get("cams") or [])
+        try:
+            with open(self.cams_file, "w", encoding="utf-8") as f:
+                _json.dump(self.known_cams, f)
+        except OSError:
+            pass
+
+    def _probe_cams(self, curr_duration: float) -> None:
+        """Look at the last couple of minutes of the buffer to learn where this stream's cams are,
+        so even the FIRST clip knows. Repeats now and then while no cam is known yet."""
+        self._checks += 1
+        if self.known_cams and self._checks % 20 != 1:
+            return
+        try:
+            span = min(150.0, curr_duration)
+            info = detect_facecam(self.buffer_file, start_sec=max(0.0, curr_duration - span),
+                                  end_sec=curr_duration, sample_interval=4.0, known_cams=self.known_cams)
+            self._remember_cams(info)
+            logger.info(f"Cam probe on live buffer: {len(self.known_cams)} cam(s) known for this stream.")
+        except Exception as e:  # a failed probe must never stop clipping
+            logger.warning(f"Live cam probe failed: {e}")
+
+    def _second_look(self) -> None:
+        """Clips made before a cam was known get another look and a re-render if one was missed."""
+        import json as _json
+        from .pipeline import rerender_clip
+        for i, c in enumerate(list(self.clips_done)):
+            try:
+                fc = c.get("facecam") or {}
+                if len(fc.get("cams") or []) >= len(self.known_cams):
+                    continue
+                if not os.path.isfile(c.get("rough_path", "")):
+                    continue
+                new_info = detect_facecam(c["rough_path"], known_cams=self.known_cams)
+                if len(new_info.get("cams") or []) <= len(fc.get("cams") or []):
+                    continue
+                logger.info(f"Live clip {c['filename']}: found a cam the first look missed, re-rendering")
+                new_clip = rerender_clip(dict(c, facecam=new_info, layout="auto", start_seconds=c["start_seconds"], end_seconds=c["end_seconds"]),
+                                         preset_name=self.preset_name, campaign=self.campaign, cpu=self.use_cpu)
+                self.clips_done[i] = new_clip
+                with open(new_clip["meta_path"], "w", encoding="utf-8") as f:
+                    _json.dump(new_clip, f, indent=2, default=str)
+            except Exception as e:
+                logger.warning(f"Second look at live clip {c.get('filename')} failed: {e}")
 
     def run_loop(self, max_iterations: Optional[int] = None):
         """Run the live monitoring loop until interrupted."""
