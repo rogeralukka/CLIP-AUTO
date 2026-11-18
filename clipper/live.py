@@ -22,7 +22,7 @@ from .captions import extract_hook_phrase, load_preset, make_ass
 from .config import load_config
 from .cutter import caption_anchor_y, cut_rough_clip, render_vertical_clip
 from .detection import find_moments
-from .downloader import get_vod_id
+from .downloader import get_vod_id, get_ytdlp_cmd, is_youtube
 from .facecam import detect_facecam, merge_known_cams, resolve_layout
 from .qc import generate_platform_metadata, perform_qc_check
 from .transcription import transcribe_clip
@@ -147,6 +147,7 @@ class LiveStreamClipper:
         self._t0 = time.time()
         self.chat: Optional[TwitchChatListener] = None
         self.analysis_window_seconds = 600  # only analyse the last 10 min each check
+        self.last_analyzed_time: float = 0.0
         self.live_vod_id = f"live_{self.stream_id}"
         # Same cam memory the normal runs use: an overlay stays put for the whole stream, so a cam
         # found in one clip (or in the first probe) is remembered for every later clip.
@@ -157,30 +158,39 @@ class LiveStreamClipper:
         self._checks = 0
 
     def start_capture_process(self) -> bool:
-        """Start background stream capture using streamlink or yt-dlp."""
-        streamlink_bin = get_streamlink_path()
-
-        if streamlink_bin and os.path.isfile(streamlink_bin):
-            cmd = [
-                streamlink_bin,
-                "--loglevel", "warning",
-                "-o", self.buffer_file,
-                self.stream_url,
-                self.quality,
-            ]
-            logger.info(f"Starting live stream capture with streamlink: {' '.join(cmd)}")
-        else:
-            # Fallback to yt-dlp
-            venv_ytdlp = os.path.join(os.path.dirname(sys.executable), "yt-dlp.exe")
-            ytdlp_bin = venv_ytdlp if os.path.isfile(venv_ytdlp) else "yt-dlp"
-            cmd = [
-                ytdlp_bin,
+        """Start background stream capture from the start of the stream using streamlink or yt-dlp."""
+        # For YouTube live streams: yt-dlp with --live-from-start is the most reliable way
+        # to capture from the beginning of the broadcast.
+        if is_youtube(self.stream_url):
+            cmd = get_ytdlp_cmd(self.stream_url) + [
                 "--quiet",
+                "--live-from-start",
                 "-f", "bestvideo[height<=1080]+bestaudio/best",
                 "-o", self.buffer_file,
                 self.stream_url,
             ]
-            logger.info(f"Starting live stream capture with yt-dlp: {' '.join(cmd)}")
+            logger.info(f"Starting YouTube live stream capture from start: {' '.join(cmd)}")
+        else:
+            streamlink_bin = get_streamlink_path()
+            if streamlink_bin and os.path.isfile(streamlink_bin):
+                cmd = [
+                    streamlink_bin,
+                    "--loglevel", "warning",
+                    "--hls-live-restart",
+                    "-o", self.buffer_file,
+                    self.stream_url,
+                    self.quality,
+                ]
+                logger.info(f"Starting live stream capture with streamlink (--hls-live-restart): {' '.join(cmd)}")
+            else:
+                cmd = get_ytdlp_cmd(self.stream_url) + [
+                    "--quiet",
+                    "--live-from-start",
+                    "-f", "bestvideo[height<=1080]+bestaudio/best",
+                    "-o", self.buffer_file,
+                    self.stream_url,
+                ]
+                logger.info(f"Starting live stream capture with yt-dlp (--live-from-start): {' '.join(cmd)}")
 
         try:
             self._capture_proc = subprocess.Popen(
@@ -199,7 +209,7 @@ class LiveStreamClipper:
             return False
 
     def check_and_clip(self) -> List[Dict[str, Any]]:
-        """Inspect the buffer, compute hype spikes, cut and render any new moments."""
+        """Inspect the buffer from the start forward, compute hype spikes, cut and render any new moments."""
         if not os.path.isfile(self.buffer_file):
             logger.debug("Buffer file not yet created.")
             return []
@@ -209,13 +219,25 @@ class LiveStreamClipper:
             logger.info(f"Live buffer warming up: {curr_duration:.1f}s captured (need >= 30s)...")
             return []
 
-        # Analyse only the most recent window. Re-scanning a 5-hour buffer every 30s
-        # would get slower and slower all stream long.
-        tail = min(self.analysis_window_seconds, curr_duration)
-        offset = curr_duration - tail
+        # Start from self.last_analyzed_time (0.0 when stream starts).
+        # We step forward through the stream in chunks up to self.analysis_window_seconds.
+        overlap = 15.0 if self.last_analyzed_time > 0.0 else 0.0
+        start_offset = max(0.0, self.last_analyzed_time - overlap)
+
+        available_dur = curr_duration - start_offset
+        if available_dur < 25.0 and self.last_analyzed_time > 0.0:
+            logger.debug("Not enough new buffer to analyze yet (need >= 25s).")
+            return []
+
+        chunk_len = min(float(self.analysis_window_seconds), available_dur)
+        end_offset = start_offset + chunk_len
+
         tail_wav = os.path.join(self.buffer_dir, "tail.wav")
         ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
-        subprocess.run([ffmpeg_bin, "-y", "-v", "error", "-sseof", f"-{tail:.1f}", "-i", self.buffer_file,
+        subprocess.run([ffmpeg_bin, "-y", "-v", "error",
+                        "-ss", f"{start_offset:.2f}",
+                        "-t", f"{chunk_len:.2f}",
+                        "-i", self.buffer_file,
                         "-vn", "-ac", "1", "-ar", "16000", tail_wav],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if not os.path.isfile(tail_wav):
@@ -224,9 +246,9 @@ class LiveStreamClipper:
         comments = None
         if self.chat is not None:
             # Chat timestamps are wall-clock since capture start; buffer time ~ the same.
-            comments = self.chat.comments_between(offset, curr_duration) or None
+            comments = self.chat.comments_between(start_offset, end_offset) or None
 
-        logger.info(f"Analyzing last {tail:.0f}s of live buffer ({curr_duration:.0f}s total, "
+        logger.info(f"Analyzing live buffer from {start_offset:.0f}s to {end_offset:.0f}s ({curr_duration:.0f}s total on disk, "
                     f"{len(comments or [])} chat msgs)...")
 
         found = find_moments(
@@ -241,17 +263,19 @@ class LiveStreamClipper:
             max_clip_length=float((self.campaign or {}).get("max_clip_length") or 60.0),
         )
 
-        # Back to buffer time; skip moments still unfolding at the live edge (next check
-        # will catch them complete) and anything already clipped.
+        # Back to buffer time; skip moments still unfolding at the very live edge
         from .signals import dedupe_moments
         new_moments = []
+        is_live_edge = (end_offset >= curr_duration - 5.0)
         for m in found:
-            m["start"] = round(m["start"] + offset, 2)
-            m["end"] = round(m["end"] + offset, 2)
-            if m["end"] > curr_duration - 3.0:
+            m["start"] = round(m["start"] + start_offset, 2)
+            m["end"] = round(m["end"] + start_offset, 2)
+            if is_live_edge and m["end"] > curr_duration - 3.0:
                 continue
             new_moments.append(m)
         new_moments = dedupe_moments(new_moments, vod_id=self.live_vod_id, downloads_dir="downloads")
+
+        self.last_analyzed_time = end_offset
 
         if not new_moments:
             logger.info("No new hype moments detected in current buffer window.")
@@ -424,7 +448,15 @@ class LiveStreamClipper:
 
         try:
             while self._running:
-                time.sleep(self.check_interval_seconds)
+                # If we have a backlog of buffer from earlier in the stream, sleep briefly
+                # so we catch up quickly to the live edge.
+                curr_duration = get_media_duration_seconds(self.buffer_file)
+                backlog = curr_duration - self.last_analyzed_time
+                if backlog > self.analysis_window_seconds * 1.2:
+                    time.sleep(2)
+                else:
+                    time.sleep(self.check_interval_seconds)
+
                 iterations += 1
 
                 try:

@@ -547,6 +547,7 @@ def download_audio_and_chat(
             "--continue",
             "--part",
             "--newline",
+            "--live-from-start",
             "-f", "ba[ext=m4a]/ba/bestaudio/best",
             "-x",
             "--audio-format", "m4a",
@@ -763,6 +764,7 @@ def download_video_section(
     time_range = f"*{format_section_timestamp(actual_start)}-{format_section_timestamp(actual_end)}"
     cmd = get_ytdlp_cmd(input_source, player_client=yt_client) + [
         "--download-sections", time_range,
+        "--live-from-start",
         # Without this, sections start on the previous keyframe and the
         # computed offset (and therefore the captions) drift by seconds.
         "--force-keyframes-at-cuts",
