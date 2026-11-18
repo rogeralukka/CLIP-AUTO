@@ -74,7 +74,7 @@ async function renderNew() {
           <div class="seg acc" id="sens">${[["2.5", "Picky"], ["2.0", "Normal"], ["1.5", "Loose"]].map(([v, l]) => `<button data-v="${v}" class="${(d.sens || "2.0") === v ? "on" : ""}">${l}</button>`).join("")}</div></div>
         <div class="col" style="grid-column:1/-1"><span class="lbl">Stream type</span>
           <div class="seg acc" id="ltype">${[["auto", "Auto-detect"], ["split", "Game + facecam"], ["gameplay", "Framed (one picture)"], ["irl", "Follow person"], ["face", "Face crop"]].map(([v, l]) => `<button data-v="${v}" class="${(d.ltype || "auto") === v ? "on" : ""}">${l}</button>`).join("")}</div>
-          <span class="muted small">Auto looks at each clip: a corner facecam gets the split (cam on top, game below); anything else is Framed — the whole picture in the middle over a blurred copy, so nothing is stretched.</span></div>
+          <span class="muted small">Auto looks at each clip: a facecam gets the split (cam on top, game below), two streamers' cams get both cams on top; anything else is Framed — the whole picture in the middle over a blurred copy. Picking a type is a preference: parts of the stream that don't match (no cam, several people) still get a layout that fits.</span></div>
         <div class="col"><span class="lbl">Video quality</span><select id="quality">${["1080p", "720p", "480p"].map(q => `<option ${d.quality === q ? "selected" : ""}>${q}</option>`).join("")}</select></div>
         <div class="col"><span class="lbl">Options</span>
           <label class="row small"><span class="switch"><input type="checkbox" id="review" ${d.review === false ? "" : "checked"}><span></span></span>Review moments before rendering</label>
@@ -304,14 +304,15 @@ function drawClips(job) {
   const list = visibleClips(job);
   $("#cliplist").innerHTML = list.length ? list.map(({ c, i }, n) => {
     const qc = c.qc || {}; const qcCls = { PASS: "ok", WARN: "warn", FAIL: "bad" }[qc.status] || "";
-    const p = c.platforms || {}; const lay = (c.layout || "gameplay").toLowerCase();
+    const p = c.platforms || {}; const lay0 = (c.layout || "gameplay").toLowerCase(); const lay = lay0 === "duo" ? "split" : lay0;
     return `<div class="clip ${c.status === "KEPT" ? "kept" : ""} ${c.status === "REJECTED" ? "rej" : ""} ${S.focus === n ? "focus" : ""}" data-i="${i}" data-n="${n}">
       <div class="phone"><video src="${media(c.path, c.rendered_at || "")}#t=0.1" controls preload="metadata" playsinline></video>
         <div class="ov">${qc.status ? `<span class="chip ${qcCls}" title="${esc((qc.flags || []).join("\n"))}">QC ${qc.status}</span>` : ""}${c.is_flagged ? `<span class="chip bad" title="${esc((c.flagged_words || []).join(", "))}">Risk words</span>` : ""}${qc.possible_music ? `<span class="chip warn">Music?</span>` : ""}</div>
         ${c.busy ? `<div class="busy"><div class="spin"></div>Re-rendering…</div>` : ""}</div>
       <div class="body">
-        <div class="row" style="justify-content:space-between"><span class="mono small muted">${fmt(c.start_seconds || 0)} · ${Math.round(c.duration || 0)}s${(c.facecam || {}).stream_type ? " · " + esc({ gaming_facecam: "game + cam", gaming: "game", irl: "IRL", just_chatting: "chatting" }[c.facecam.stream_type] || c.facecam.stream_type) : ""}</span><span class="chip">${(+(c.hype_score || 0)).toFixed(1)} hype</span></div>
+        <div class="row" style="justify-content:space-between"><span class="mono small muted">${fmt(c.start_seconds || 0)} · ${Math.round(c.duration || 0)}s${(c.facecam || {}).stream_type ? " · " + esc({ gaming_facecam: "game + cam", gaming_duo: "game + 2 cams", gaming: "game", irl: "IRL", just_chatting: "chatting" }[c.facecam.stream_type] || c.facecam.stream_type) : ""}</span><span class="chip">${(+(c.hype_score || 0)).toFixed(1)} hype</span></div>
         ${(qc.flags || []).length ? `<div class="small" style="color:var(--warn)">${(qc.flags || []).map(esc).join("<br>")}</div>` : ""}
+        ${c.layout_note ? `<div class="small muted">Layout: ${esc(c.layout_note)}</div>` : ""}
         ${c.error ? `<div class="small" style="color:var(--bad)">${esc(c.error)}</div>` : ""}
         <div class="col"><span class="lbl">Hook title</span><input type="text" data-hook value="${esc(c.hook_title || "")}" maxlength="60" placeholder="No hook"></div>
         <div class="row" style="justify-content:space-between"><div class="seg" data-lay>${[["split", "Split"], ["gameplay", "Framed"], ["irl", "Follow"], ["face", "Face"]].map(([v, l]) => `<button data-v="${v}" class="${lay === v ? "on" : ""}">${l}</button>`).join("")}</div>

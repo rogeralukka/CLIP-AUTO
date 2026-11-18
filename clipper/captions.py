@@ -107,6 +107,9 @@ def extract_hook_phrase(words: List[Tuple[float, float, str]], max_words: int = 
         content = [c for c in clean if c and c not in _FILLER]
         if len(toks) < 3 or len(toks) > max_words or len(content) < 2:
             continue
+        # "What What What What is" / "yo yo yo yo" are not hooks
+        if len(set(c for c in clean if c)) < 0.6 * len([c for c in clean if c]):
+            continue
         score = len(content) * 0.6
         text = " ".join(toks)
         if "!" in text:
@@ -198,7 +201,7 @@ def make_ass(
         preset = dict(preset)
 
     # Adjust vertical margin based on layout to avoid overlapping facecam
-    if layout == "split":
+    if layout in ("split", "duo"):
         # Split = 192px band / cam 768 / game 768 / 192px band: captions in the bottom band,
         # hook in the top band, so neither covers the cam or the gameplay
         preset["margin_v"] = preset.get("split_margin_v", 52)

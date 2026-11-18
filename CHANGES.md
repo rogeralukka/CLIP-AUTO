@@ -4,6 +4,40 @@ This document provides a comprehensive log of all architectural improvements, up
 
 ---
 
+## 2026-11-18: real 1080p downloads, real cam outlines, two-cam layout
+
+Checked on Master's own runs (Kai + Speed co-op stream, PewDiePie Detroit stream, Speed + MrBeast IRL stream).
+
+- **Every clip so far came from a 640x360 file.** The yt-dlp command forced YouTube's
+  `android,web` clients, which currently only give the 360p fallback (format 18), and the
+  format rule then silently took it. Clients are no longer forced. For each stream the app
+  now checks which client offers the sharpest video (default, tv, web_safari, android_vr,
+  mweb, ...) and uses that one. Old 360p pieces in the cache are downloaded again, and a clip
+  whose source is still under 720p gets a QC warning saying so.
+  `start_studio.bat` updates yt-dlp on start (`yt-dlp[default]` includes the JS solver).
+- **Cam outline instead of "face box + padding".** A cam is a picture pasted on the game,
+  so its border is an edge in every frame while the game keeps changing. The app finds that
+  rectangle and crops inside it, so no game leaks into the cam band (the "gameplay twice"
+  bug). A rectangle that is part of the room (a poster behind an IRL streamer) is rejected
+  because the wall around it doesn't move.
+- **Two cams = two-cam layout.** Co-op streams (two streamers' cams) get both cams side by
+  side on top (540x768 each) and the game below, with a game crop that leaves both cams out.
+  Choosing "Game + facecam" no longer cuts one streamer out.
+- **The job's stream type is a preference, checked per clip.** A part of the stream with no
+  cam (e.g. the IRL intro) gets Framed instead of a broken split; Follow with two or more
+  people on screen gets Framed so nobody is cut out. The reason shows under the clip. Layout
+  buttons on a clip are still obeyed as picked (except Split on a two-cam stream).
+- **Story games no longer turn a facecam stream into "IRL".** Faces inside the game
+  (Detroit: Become Human) used to count as "other people".
+- **Follow keeps two people in frame** when they fit in the 9:16 window.
+- **Whisper loops** ("I know what it is" x20, "oh oh oh ..."): `condition_on_previous_text`
+  off, repetition penalty, stricter compression check, and any word/phrase repeated more
+  than 3 times back to back is trimmed to 3 (also in already-saved transcripts). Hooks made of
+  one repeated word are skipped.
+- **Optional AI sharpening of small cams** (Real-ESRGAN, free, GPU): `setup_upscaler.ps1`
+  installs it into `bin/realesrgan`; then cam crops blown up 1.6x or more are AI-upscaled.
+  If it isn't installed or fails, clips render as before. Not tested on a GPU yet.
+
 ## 1. Summary of Changes Per File
 
 ### Core Architecture & Configuration

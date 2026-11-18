@@ -157,7 +157,7 @@ def create_jobs(body: NewJobs):
             preset=body.preset or None,
             use_cpu=body.cpu,
             auto_render=not body.review,
-            layout=body.layout if body.layout in ("auto", "split", "gameplay", "face", "irl") else "auto",
+            layout=body.layout if body.layout in ("auto", "split", "duo", "gameplay", "face", "irl") else "auto",
         ))
     if not ids:
         raise HTTPException(400, "Paste at least one link")

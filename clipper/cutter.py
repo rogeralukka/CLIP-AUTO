@@ -3,13 +3,15 @@ import json
 import logging
 import os
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from .captions import escape_ffmpeg_ass_path
 from .config import load_config
-from .facecam import compute_gameplay_crop, detect_facecam, expand_box_with_padding
+from .upscale import needs_upscale, upscale_crop_video, upscale_enabled
+from .facecam import (detect_facecam, expand_box_with_padding, fit_crop_in_panel,
+                      gameplay_crop_avoiding)
 from .process_manager import check_cancelled_or_paused, run_tracked_command
 from .utils import get_ffmpeg_path
 
@@ -283,7 +285,7 @@ def render_vertical_clip(
         if facecam_info is None:
             facecam_info = detect_facecam(abs_rough)
         active_layout = facecam_info.get("layout") or ("split" if facecam_info.get("found") else "gameplay")
-    elif active_layout in ("split", "face", "irl") and facecam_info is None:
+    elif active_layout in ("split", "duo", "face", "irl") and facecam_info is None:
         facecam_info = detect_facecam(abs_rough)
 
     frame_size = facecam_info.get("frame_size", (1920, 1080)) if facecam_info else (1920, 1080)
@@ -298,6 +300,25 @@ def render_vertical_clip(
           "gblur=sigma=12,eq=brightness=-0.18:saturation=1.15,"
           f"scale=1080:1920:{L},setsar=1")
 
+    cams = list((facecam_info or {}).get("cams") or [])
+    if active_layout == "duo" and len(cams) < 2:
+        active_layout = "split"
+
+    # Extra inputs (AI-sharpened cam crops) go after the clip itself
+    extra_inputs: List[str] = []
+
+    def cam_stream(label: str, crop: Tuple[int, int, int, int], out_w: int, out_h: int, tag: str) -> str:
+        """Filter for one cam tile: AI-sharpened copy when available, else a plain crop+scale."""
+        cx, cy, cw, ch = crop
+        if upscale_enabled() and needs_upscale(cw, ch, out_w, out_h):
+            up = upscale_crop_video(abs_rough, crop, out_w, out_h,
+                                    os.path.splitext(abs_out)[0] + f"_{tag}_ai.mp4", job_id=job_id)
+            if up:
+                extra_inputs.extend(["-i", up])
+                idx = len(extra_inputs) // 2
+                return f"[{idx}:v] setsar=1 [{label}]"
+        return None  # type: ignore[return-value]
+
     if active_layout == "split":
         # Facecam + gameplay. The 9:16 frame is split into 10 bands: the top and bottom
         # band hold the hook / captions over a blurred fill, the middle 8 are two
@@ -305,25 +326,56 @@ def render_vertical_clip(
         # of the full height, so both halves stay sharp.
         band = 192
         half = (1920 - 2 * band) // 2  # 768
-        padded_box = facecam_info.get("padded_box") if facecam_info else None
-        corner = facecam_info.get("corner", "top_right") if facecam_info else "top_right"
-
-        if padded_box:
-            fx, fy, fw, fh = padded_box
+        if cams:
+            # The cam's real outline: crop INSIDE it, so no game leaks into the cam band
+            cam = cams[0]
+            fx, fy, fw, fh = fit_crop_in_panel(tuple(cam["rect"]), tuple(cam["face_box"]) if cam.get("face_box") else None,
+                                               1080.0 / half)
+            avoid = [tuple(c["rect"]) for c in cams]
         else:
-            fw, fh = int(src_w * 0.28), int(src_h * 0.35)
-            fx, fy = max(0, src_w - fw), 0
-        # Re-fit the cam box to the half's aspect so nothing gets squashed
-        fx, fy, fw, fh = expand_box_with_padding((fx, fy, fw, fh), src_w, src_h, padding=0.0,
-                                                 target_aspect=1080.0 / half)
-        gx, gy, gw, gh = compute_gameplay_crop(src_w, src_h, corner, target_aspect=1080.0 / half)
+            padded_box = facecam_info.get("padded_box") if facecam_info else None
+            if padded_box:
+                fx, fy, fw, fh = padded_box
+            else:
+                fw, fh = int(src_w * 0.28), int(src_h * 0.35)
+                fx, fy = max(0, src_w - fw), 0
+            # Re-fit the cam box to the half's aspect so nothing gets squashed
+            fx, fy, fw, fh = expand_box_with_padding((fx, fy, fw, fh), src_w, src_h, padding=0.0,
+                                                     target_aspect=1080.0 / half)
+            avoid = [(fx, fy, fw, fh)]
+        gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, avoid, 1080.0 / half)
 
+        ai_cam = cam_stream("top_face", (fx, fy, fw, fh), 1080, half, "cam")
         filter_parts.append(
-            "[0:v] split=3 [s_bg][s_cam][s_game]; "
-            f"[s_bg] {BG} [bg]; "
-            f"[s_cam] crop={fw}:{fh}:{fx}:{fy},scale=1080:{half}:force_original_aspect_ratio=increase:{L},crop=1080:{half},setsar=1 [top_face]; "
+            ("[0:v] split=2 [s_bg][s_game]; " if ai_cam else "[0:v] split=3 [s_bg][s_cam][s_game]; ")
+            + f"[s_bg] {BG} [bg]; "
+            + (f"{ai_cam}; " if ai_cam else
+               f"[s_cam] crop={fw}:{fh}:{fx}:{fy},scale=1080:{half}:force_original_aspect_ratio=increase:{L},crop=1080:{half},setsar=1 [top_face]; ") +
             f"[s_game] crop={gw}:{gh}:{gx}:{gy},scale=1080:{half}:force_original_aspect_ratio=increase:{L},crop=1080:{half},setsar=1 [bot_game]; "
             f"[bg][top_face] overlay=0:{band} [b1]; [b1][bot_game] overlay=0:{band + half} [v_base]"
+        )
+    elif active_layout == "duo":
+        # Two streamers (co-op): both cams side by side in the top half, each 540x768,
+        # the game in the bottom half (crop that leaves both cams out).
+        band = 192
+        half = (1920 - 2 * band) // 2  # 768
+        a, b = sorted(cams[:2], key=lambda c: c["rect"][0])
+        ax, ay, aw, ah = fit_crop_in_panel(tuple(a["rect"]), tuple(a["face_box"]) if a.get("face_box") else None, 540.0 / half)
+        bx, by, bw, bh = fit_crop_in_panel(tuple(b["rect"]), tuple(b["face_box"]) if b.get("face_box") else None, 540.0 / half)
+        gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, [tuple(c["rect"]) for c in cams], 1080.0 / half)
+        ai_a = cam_stream("cam_a", (ax, ay, aw, ah), 540, half, "cam_a")
+        ai_b = cam_stream("cam_b", (bx, by, bw, bh), 540, half, "cam_b")
+        outs = ["[s_bg]", "[s_game]"] + ([] if ai_a else ["[s_a]"]) + ([] if ai_b else ["[s_b]"])
+        filter_parts.append(
+            f"[0:v] split={len(outs)} {''.join(outs)}; "
+            f"[s_bg] {BG} [bg]; "
+            + (f"{ai_a}; " if ai_a else
+               f"[s_a] crop={aw}:{ah}:{ax}:{ay},scale=540:{half}:force_original_aspect_ratio=increase:{L},crop=540:{half},setsar=1 [cam_a]; ")
+            + (f"{ai_b}; " if ai_b else
+               f"[s_b] crop={bw}:{bh}:{bx}:{by},scale=540:{half}:force_original_aspect_ratio=increase:{L},crop=540:{half},setsar=1 [cam_b]; ") +
+            f"[s_game] crop={gw}:{gh}:{gx}:{gy},scale=1080:{half}:force_original_aspect_ratio=increase:{L},crop=1080:{half},setsar=1 [bot_game]; "
+            f"[bg][cam_a] overlay=0:{band} [b1]; [b1][cam_b] overlay=540:{band} [b2]; "
+            f"[b2][bot_game] overlay=0:{band + half} [v_base]"
         )
     elif active_layout in ("irl", "face") and (facecam_info or {}).get("track"):
         # Moving 9:16 window that follows the main person (IRL / camera streams)
@@ -396,16 +448,17 @@ def render_vertical_clip(
     overlay_img = overlay.get("image_path") if overlay else None
     has_overlay = overlay_img and os.path.isfile(overlay_img)
 
-    inputs = ["-i", abs_rough]
+    inputs = ["-i", abs_rough] + extra_inputs
     if has_overlay:
         abs_overlay = os.path.abspath(overlay_img)
         inputs.extend(["-i", abs_overlay])
+        ov_idx = len(inputs) // 2 - 1
         ox = str(overlay.get("x", "(W-w)/2"))
         oy = str(overlay.get("y", "120"))
         ow = str(overlay.get("width", -1))
         oh = str(overlay.get("height", -1))
         over_scale = f"scale={ow}:{oh}" if (ow != "-1" or oh != "-1") else "null"
-        filter_parts.append(f"[1:v] {over_scale} [v_over]; {curr_v}[v_over] overlay={ox}:{oy} [outv]")
+        filter_parts.append(f"[{ov_idx}:v] {over_scale} [v_over]; {curr_v}[v_over] overlay={ox}:{oy} [outv]")
         curr_v = "[outv]"
 
     # Progress bar along the bottom edge (fills as the clip plays)

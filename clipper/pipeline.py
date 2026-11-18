@@ -18,8 +18,9 @@ from .downloader import (
     is_url,
     is_youtube,
     prepare_input,
+    video_height,
 )
-from .facecam import detect_facecam
+from .facecam import detect_facecam, resolve_layout
 from .process_manager import check_cancelled_or_paused, is_job_paused, log_job_message
 from .qc import generate_platform_metadata, perform_qc_check
 from .transcription import (
@@ -426,12 +427,12 @@ def render_pipeline_moments(
         clip_step(0.55, f"Clip {i} of {total}: checking for facecam / people")
         clip_layout = (m.get("layout") if isinstance(m, dict) else None) or "auto"
         facecam_info = None
-        if clip_layout in ("auto", "split", "face", "irl"):
+        layout_note = ""
+        if clip_layout in ("auto", "split", "duo", "face", "irl"):
             facecam_info = detect_facecam(rough_path)
-            if clip_layout == "auto":
-                active_layout = facecam_info.get("layout") or "gameplay"
-            else:
-                active_layout = clip_layout
+            # The stream type picked for the whole job is a preference: each clip is checked,
+            # so a part of the stream with no cam (or two cams) still gets a layout that fits.
+            active_layout, layout_note = resolve_layout(clip_layout, facecam_info)
         else:
             active_layout = clip_layout
 
@@ -470,6 +471,7 @@ def render_pipeline_moments(
             facecam_info=facecam_info,
             word_count=len(words),
             layout=active_layout,
+            source_height=video_height(rough_path),
         )
 
         platform_meta = generate_platform_metadata(
@@ -500,6 +502,7 @@ def render_pipeline_moments(
             "word_count": len(words),
             "transcript": transcript_text,
             "layout": active_layout,
+            "layout_note": layout_note,
             "facecam": facecam_info,
             "qc": qc_report,
             "platforms": platform_meta,
@@ -654,10 +657,11 @@ def rerender_clip(clip: Dict[str, Any], layout: Optional[str] = None, hook_title
         words = transcribe_clip(rough, use_cpu=cpu, cache_dir=clip_dir)
 
     facecam_info = clip.get("facecam")
-    if new_layout in ("auto", "split", "face", "irl") and not (facecam_info and "track" in facecam_info):
+    if new_layout in ("auto", "split", "duo", "face", "irl") and not (facecam_info and "cams" in facecam_info):
         facecam_info = detect_facecam(rough)
-    if new_layout == "auto":
-        new_layout = (facecam_info or {}).get("layout") or "gameplay"
+    # A layout button is the user's explicit choice; only "Split" on a two-cam stream
+    # becomes the two-cam layout (a single split would cut one streamer out).
+    new_layout, layout_note = resolve_layout(new_layout, facecam_info, explicit=(layout is not None))
 
     preset = load_preset(preset_name or clip.get("preset") or "classic_yellow")
     make_ass(words, ass, preset=preset, layout=new_layout, hook_title=new_hook or None)
@@ -666,10 +670,12 @@ def rerender_clip(clip: Dict[str, Any], layout: Optional[str] = None, hook_title
 
     clip = dict(clip)
     clip["layout"] = new_layout
+    clip["layout_note"] = layout_note
     clip["hook_title"] = new_hook
     clip["facecam"] = facecam_info
     clip["qc"] = perform_qc_check(clip["path"], duration=clip.get("duration", 30.0), campaign=campaign,
-                                  facecam_info=facecam_info, word_count=len(words), layout=new_layout)
+                                  facecam_info=facecam_info, word_count=len(words), layout=new_layout,
+                                  source_height=video_height(rough))
     clip["platforms"] = generate_platform_metadata(hook_title=new_hook or "",
                                                    transcript=clip.get("transcript", ""), campaign=campaign)
     clip["rendered_at"] = time.time()

@@ -273,7 +273,7 @@ class LiveStreamClipper:
 
             # Facecam layout
             facecam = detect_facecam(rough_path)
-            layout = facecam.get("layout") or ("split" if facecam.get("found") else "gameplay")
+            layout = facecam.get("layout") or "gameplay"
 
             # Hook title & ASS
             hook_title = extract_hook_phrase(words)

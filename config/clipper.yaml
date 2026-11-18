@@ -50,6 +50,10 @@ polish:
   progress_bar: true             # Thin bar along the bottom that fills as the clip plays
   progress_bar_color: "yellow"
   hook_duration_seconds: 2.5
+  enhance: "light"               # light denoise + sharpen on every clip ("off" to disable)
+  ai_upscale_cams: "auto"        # AI-sharpen small cam crops with Real-ESRGAN when installed (setup_upscaler.ps1); "off" to disable
+  ai_upscale_min_factor: 1.6     # only when the cam is blown up at least this much
+  ai_upscale_model: "realesrgan-x4plus"
   loudnorm:
     enabled: true
     target_lufs: -14.0

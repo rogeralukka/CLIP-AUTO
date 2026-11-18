@@ -423,28 +423,63 @@ def detect_facecam(
     mcy = (med_box[1] + med_box[3] / 2.0) / frame_h
     near_edge = mcx < 0.35 or mcx > 0.65 or mcy < 0.30 or mcy > 0.70
 
+    # Real cam rectangles (one per streamer: co-op streams show two cams)
+    frames = [f for _, f in samples]
+    seeds = [c["median_box"] for c in _stable_clusters(all_detections, frame_w, frame_h, total_samples)]
+    try:
+        cams = find_cam_panels(frames, seeds, detector)
+    except Exception as e:  # never let the panel finder break a render
+        logger.warning(f"Cam panel search failed: {e}")
+        cams = []
+
+    # How many people are on screen at once (big faces, outside any cam)
+    def _in_cam(b):
+        cx, cy = b[0] + b[2] / 2.0, b[1] + b[3] / 2.0
+        return any(r[0] <= cx <= r[0] + r[2] and r[1] <= cy <= r[1] + r[3] for r in (c["rect"] for c in cams))
+    per_t: Dict[float, int] = {}
+    for t, b in all_detections:
+        if b[3] >= 0.10 * frame_h and not _in_cam(b):
+            per_t[round(t, 2)] = per_t.get(round(t, 2), 0) + 1
+    group_ratio = sum(1 for v in per_t.values() if v >= 2) / max(1, total_samples)
+    people = 2 if group_ratio >= 0.3 else 1
+
     # One picture, no separate cam: default to "gameplay" (Framed: the whole 16:9 picture in
-    # the middle over a blurred fill). Cropping a 1080p frame to 9:16 and blowing it up to
-    # full screen looked soft; "irl" (Follow) / "face" stay available per clip.
+    # the middle over a blurred fill). Follow / Face stay available per clip.
     single = str(fc_cfg.get("single_source_layout", "gameplay"))
 
-    if presence_ratio >= thresh and stable and not is_big and near_edge and other_ratio < 0.35:
+    if len(cams) >= 2:
+        # Two streamers' cams (duo / co-op stream): both cams on top, game below
+        cams = sorted(cams[:2], key=lambda c: c["rect"][0])
+        stream_type, layout, found = "gaming_duo", "duo", True
+    elif len(cams) == 1:
+        stream_type, layout, found = "gaming_facecam", "split", True
+    elif presence_ratio >= thresh and not is_big and near_edge and (
+            (stable and other_ratio < 0.35) or drift <= 0.012):
+        # Cam found by its face only (no clear outline). A very still face near the edge is
+        # a cam even when the game shows faces of its own (story games).
         stream_type, layout, found = "gaming_facecam", "split", True
     elif presence_ratio >= thresh and is_big and stable:
         # One big face that stays put: Just Chatting / reaction cam filling the screen
         stream_type, layout, found = "just_chatting", single, True
     elif any_face_ratio >= 0.30:
-        # People on camera, moving around or several of them: IRL / event stream.
-        # Follow the main person with a moving 9:16 crop instead of a split.
+        # People filmed by a camera, moving around or several of them: IRL / event stream
         stream_type, layout, found = "irl", single, False
     else:
         stream_type, layout, found = "gaming", "gameplay", False
 
+    if found and cams:
+        presence_ratio = round(float(np.mean([c["presence"] for c in cams])), 3)
+        med_box = cams[0]["face_box"]
+        corner = cams[0]["corner"]
+    else:
+        corner = cluster["corner"]
+
     track = build_subject_track(all_detections, frame_w, frame_h) if stream_type in ("irl", "just_chatting") else []
 
     logger.info(
-        f"Stream type: {stream_type} (layout={layout}; main face presence={presence_ratio:.0%}, "
-        f"drift={drift:.3f}, other faces in {other_ratio:.0%} of frames, box={med_box})"
+        f"Stream type: {stream_type} (layout={layout}; cams={[c['rect'] for c in cams]}, "
+        f"face presence={presence_ratio:.0%}, drift={drift:.3f}, other faces in {other_ratio:.0%} of frames, "
+        f"people={people})"
     )
 
     return {
@@ -454,13 +489,59 @@ def detect_facecam(
         "presence_ratio": presence_ratio,
         "face_box": med_box,
         "padded_box": padded_box,
-        "corner": cluster["corner"],
+        "cams": cams,
+        "people": people,
+        "corner": corner,
         "frame_size": (frame_w, frame_h),
         "total_samples": total_samples,
         "detected_samples": cluster_count,
         "drift": round(drift, 4),
         "track": track,
     }
+
+
+def _stable_clusters(detections, frame_w: int, frame_h: int, total: int,
+                     min_ratio: float = 0.25) -> List[Dict[str, Any]]:
+    """All face clusters that stay put in a good share of frames (one per cam)."""
+    remaining = list(detections)
+    out = []
+    for _ in range(4):
+        c = cluster_face_boxes(remaining, frame_w, frame_h, drift_tolerance=0.06)
+        if not c or c["count"] < max(2, min_ratio * total):
+            break
+        out.append(c)
+        keys = {(round(t, 2), tuple(b)) for t, b in c["boxes"]}
+        remaining = [(t, b) for t, b in remaining if (round(t, 2), tuple(b)) not in keys]
+    return out
+
+
+def resolve_layout(requested: Optional[str], info: Optional[Dict[str, Any]],
+                   explicit: bool = False) -> Tuple[str, str]:
+    """Turn the layout the user asked for into one that fits what is actually on screen.
+
+    Returns (layout, note). "split" means "game + facecam": with two streamer cams it becomes
+    "duo" (so nobody gets cut out); with no cam in this part of the stream it falls back to
+    Framed instead of showing the game twice. `explicit` = the user picked this layout for
+    this one clip (a layout button), so only the two-cam upgrade is applied.
+    """
+    info = info or {}
+    req = (requested or "auto").lower()
+    cams = info.get("cams") or []
+    if req == "auto":
+        return (info.get("layout") or "gameplay"), ""
+    if req in ("split", "duo"):
+        if len(cams) >= 2:
+            return "duo", ("two cams found: both shown" if req == "split" else "")
+        if info.get("found") and info.get("stream_type") in ("gaming_facecam", "gaming_duo"):
+            return "split", ""
+        if explicit:
+            return "split", ""
+        return "gameplay", "no facecam in this part of the stream, used Framed"
+    if req in ("irl", "follow"):
+        if info.get("people", 1) >= 2 and not explicit:
+            return "gameplay", "several people on screen, used Framed so nobody is cut out"
+        return "irl", ""
+    return req, ""
 
 
 def build_subject_track(
@@ -489,6 +570,15 @@ def build_subject_track(
             return area * (1.0 - min(0.6, near))
         b = max(boxes, key=key)
         prev_x = b[0] + b[2] / 2.0
+        # Several people close together (e.g. two people talking): frame them all when
+        # they fit in the 9:16 window instead of following only the biggest face.
+        crop_w = frame_h * 9.0 / 16.0
+        people = [p for p in boxes if p[3] >= 0.45 * b[3]]
+        if len(people) >= 2:
+            lo = min(p[0] for p in people)
+            hi = max(p[0] + p[2] for p in people)
+            if hi - lo <= crop_w * 0.85:
+                prev_x = (lo + hi) / 2.0
         xs.append(prev_x)
     arr = np.array(xs, dtype=np.float32)
     if len(arr) >= 3:
@@ -535,3 +625,299 @@ def compute_gameplay_crop(
 
     y = (frame_height - crop_h) // 2
     return (x, y, crop_w, crop_h)
+
+
+# --------------------------------------------------------------------------- cam panels
+# A facecam is a separate video pasted on top of the game as a rectangle. Its border
+# stays in the same place in every frame while the game underneath keeps changing, so
+# edges that are present in (almost) every sampled frame outline the cam exactly. That
+# gives the real cam rectangle instead of "face box + guessed padding", which used to
+# pull half the game into the cam band.
+
+def edge_persistence(frames: List[np.ndarray], width: int = 640) -> Tuple[np.ndarray, float]:
+    """Fraction of sampled frames in which each pixel is on an edge (at analysis width)."""
+    if not frames:
+        return np.zeros((1, 1), np.float32), 1.0
+    h0, w0 = frames[0].shape[:2]
+    scale = width / float(w0)
+    size = (width, max(1, int(round(h0 * scale))))
+    acc = None
+    k = np.ones((3, 3), np.uint8)
+    for f in frames:
+        g = cv2.cvtColor(cv2.resize(f, size, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+        g = cv2.GaussianBlur(g, (3, 3), 0)
+        e = cv2.dilate(cv2.Canny(g, 40, 120), k) > 0
+        acc = e.astype(np.float32) if acc is None else acc + e
+    return acc / float(len(frames)), scale
+
+
+def _col_cov(P: np.ndarray, x: int, y0: int, y1: int, thr: float = 0.6) -> float:
+    W = P.shape[1]
+    if y1 <= y0:
+        return 0.0
+    band = P[y0:y1, max(0, x - 1):min(W, x + 2)]
+    return float((band.max(axis=1) >= thr).mean()) if band.size else 0.0
+
+
+def _row_cov(P: np.ndarray, y: int, x0: int, x1: int, thr: float = 0.6) -> float:
+    H = P.shape[0]
+    if x1 <= x0:
+        return 0.0
+    band = P[max(0, y - 1):min(H, y + 2), x0:x1]
+    return float((band.max(axis=0) >= thr).mean()) if band.size else 0.0
+
+
+def find_panel_around(P: np.ndarray, seed: Tuple[int, int, int, int],
+                      min_size: Tuple[float, float] = (1.5, 1.3),
+                      max_area: float = 0.35) -> Optional[Dict[str, Any]]:
+    """Smallest well-outlined rectangle around `seed` (x, y, w, h in P's pixels).
+
+    Each side is either the frame edge or a line that is an edge in most frames along
+    its whole length. Returns {"rect": (x0, y0, x1, y1), "real_sides": n, "cov": c}.
+    """
+    H, W = P.shape
+    sx, sy, sw, sh = seed
+    fx0, fy0, fx1, fy1 = max(0, sx), max(0, sy), min(W, sx + sw), min(H, sy + sh)
+    if fx1 - fx0 < 2 or fy1 - fy0 < 2:
+        return None
+    edge = 3  # within this many px of the frame edge counts as "on the edge"
+
+    def cands(lo, hi, cov_fn, border, rev):
+        # every line that covers the seed's span; keep the strongest few (a real cam
+        # border is an edge in ~every frame, busy game texture only in some)
+        found = []
+        for v in range(lo, hi + 1):
+            c = cov_fn(v)
+            if c >= 0.7:
+                # equal strength: nearest the face first
+                found.append((round(c, 2), -abs(v - (hi if rev else lo)), v))
+        found.sort(reverse=True)
+        out: List[int] = []
+        for c, _, v in found:
+            if all(abs(v - o) > 2 for o in out):
+                out.append(v)
+            if len(out) >= 12:
+                break
+        return out + [border]
+
+    lefts = cands(edge, fx0 - 2, lambda x: _col_cov(P, x, fy0, fy1), 0, True)
+    rights = cands(fx1 + 2, W - 1 - edge, lambda x: _col_cov(P, x, fy0, fy1), W - 1, False)
+    tops = cands(edge, fy0 - 2, lambda y: _row_cov(P, y, fx0, fx1), 0, True)
+    bots = cands(fy1 + 2, H - 1 - edge, lambda y: _row_cov(P, y, fx0, fx1), H - 1, False)
+
+    _cc: Dict[Tuple[str, int, int, int], float] = {}
+
+    def ccov(x, a, b):
+        k = ("c", x, a, b)
+        if k not in _cc:
+            _cc[k] = _col_cov(P, x, a, b)
+        return _cc[k]
+
+    def rcov(y, a, b):
+        k = ("r", y, a, b)
+        if k not in _cc:
+            _cc[k] = _row_cov(P, y, a, b)
+        return _cc[k]
+
+    best = None
+    for L in lefts:
+        for R in rights:
+            w = R - L
+            if w < min_size[0] * sw:
+                continue
+            for T in tops:
+                for B in bots:
+                    h = B - T
+                    if h < min_size[1] * sh or w * h > max_area * W * H:
+                        continue
+                    if not (0.5 <= w / max(1, h) <= 2.9):
+                        continue
+                    covs = []
+                    if L > edge:
+                        covs.append(ccov(L, T, B))
+                    if R < W - 1 - edge:
+                        covs.append(ccov(R, T, B))
+                    if T > edge:
+                        covs.append(rcov(T, L, R))
+                    if B < H - 1 - edge:
+                        covs.append(rcov(B, L, R))
+                    if len(covs) < 2 or min(covs) < 0.75:
+                        continue
+                    # The OUTER border wins: the cam's own background is static too, so
+                    # lines inside the cam (shelves, desk) are also "persistent edges".
+                    score = (w * h, float(np.mean(covs)))
+                    if best is None or score > best[0]:
+                        best = (score, (L, T, R, B), len(covs))
+    if best is None:
+        return None
+    return {"rect": best[1], "real_sides": best[2], "cov": round(best[0][1], 3)}
+
+
+def _faces_in_panel(detector: "FaceDetectorWrapper", frames: List[np.ndarray],
+                    rect: Tuple[int, int, int, int]) -> Tuple[float, Optional[Tuple[int, int, int, int]]]:
+    """Share of frames with a face inside the panel (panel zoomed up first, since cams are
+    small), and the median face box in frame coordinates."""
+    x, y, w, h = rect
+    if w < 8 or h < 8:
+        return 0.0, None
+    zoom = max(1.0, min(4.0, 480.0 / h))
+    hits, boxes = 0, []
+    for f in frames:
+        crop = f[y:y + h, x:x + w]
+        if crop.size == 0:
+            continue
+        big = cv2.resize(crop, (int(w * zoom), int(h * zoom)), interpolation=cv2.INTER_CUBIC) if zoom > 1 else crop
+        found = detector.detect_faces(big)
+        # ignore tiny specks (faces in the background of the cam)
+        found = [b for b in found if b[3] >= 0.12 * big.shape[0]]
+        if found:
+            hits += 1
+            b = max(found, key=lambda r: r[2] * r[3])
+            boxes.append((x + b[0] / zoom, y + b[1] / zoom, b[2] / zoom, b[3] / zoom))
+    if not boxes:
+        return hits / max(1, len(frames)), None
+    med = tuple(int(np.median([b[i] for b in boxes])) for i in range(4))
+    return hits / max(1, len(frames)), med  # type: ignore[return-value]
+
+
+def find_cam_panels(frames: List[np.ndarray],
+                    face_seeds: List[Tuple[int, int, int, int]],
+                    detector: Optional["FaceDetectorWrapper"] = None,
+                    min_presence: float = 0.3) -> List[Dict[str, Any]]:
+    """Find facecam rectangles (frame pixel coords). Seeds: stable faces + the 4 corners."""
+    if len(frames) < 3:
+        return []
+    detector = detector or get_face_detector()
+    H0, W0 = frames[0].shape[:2]
+    P, s = edge_persistence(frames)
+    Hp, Wp = P.shape
+    M = motion_map(frames, (Wp, Hp))
+
+    seeds: List[Tuple[Tuple[int, int, int, int], Tuple[float, float]]] = []
+    for (x, y, w, h) in face_seeds:
+        seeds.append(((int(x * s), int(y * s), max(2, int(w * s)), max(2, int(h * s))), (1.5, 1.3)))
+    # Corner / edge seeds find cams whose face the detector missed (dark, small, turned away)
+    sw, sh = int(Wp * 0.05), int(Hp * 0.07)
+    for fx in (0.06, 0.5 - 0.025, 0.89):
+        for fy in (0.07, 0.86):
+            seeds.append(((int(Wp * fx), int(Hp * fy), sw, sh), (2.2, 2.0)))
+
+    panels: List[Dict[str, Any]] = []
+    for seed, msz in seeds:
+        res = find_panel_around(P, seed, min_size=msz)
+        if not res:
+            continue
+        L, T, R, B = res["rect"]
+        # A cam overlay hugs an edge of the screen
+        gap = min(L / Wp, (Wp - 1 - R) / Wp, T / Hp, (Hp - 1 - B) / Hp)
+        if gap > 0.06:
+            continue
+        rect = (int(L / s), int(T / s), int((R - L) / s), int((B - T) / s))
+        if any(_iou(rect, p["rect"]) > 0.5 for p in panels):
+            continue
+        # A pasted-on cam has the game moving all around it. A rectangle that belongs to
+        # the scene itself (a poster or TV behind an IRL streamer) has a still wall around
+        # it while the person in front of it moves.
+        ring, inside = _ring_motion(M, (L, T, R, B))
+        if ring < 4.0 or ring < 1.15 * inside:
+            continue
+        presence, face = _faces_in_panel(detector, frames, rect)
+        if presence < min_presence or face is None:
+            continue
+        cx = (rect[0] + rect[2] / 2.0) / W0
+        cy = (rect[1] + rect[3] / 2.0) / H0
+        panels.append({
+            "rect": rect,
+            "face_box": face,
+            "presence": round(presence, 3),
+            "real_sides": res["real_sides"],
+            "edge_cov": res["cov"],
+            "corner": f"{'top' if cy < 0.5 else 'bottom'}_{'left' if cx < 0.5 else 'right'}",
+        })
+    # Biggest, most reliable first
+    panels.sort(key=lambda p: (p["presence"] >= 0.5, p["rect"][2] * p["rect"][3]), reverse=True)
+    return panels
+
+
+def motion_map(frames: List[np.ndarray], size: Tuple[int, int]) -> np.ndarray:
+    """Mean absolute change between consecutive samples, per pixel (0-255 scale)."""
+    g = [cv2.cvtColor(cv2.resize(f, size, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.float32)
+         for f in frames]
+    if len(g) < 2:
+        return np.zeros((size[1], size[0]), np.float32)
+    return np.mean([np.abs(a - b) for a, b in zip(g[1:], g[:-1])], axis=0)
+
+
+def _ring_motion(M: np.ndarray, rect: Tuple[int, int, int, int]) -> Tuple[float, float]:
+    L, T, R, B = rect
+    H, W = M.shape
+    r = max(3, int(W * 0.04))
+    mask = np.zeros(M.shape, bool)
+    mask[max(0, T - r):min(H, B + r), max(0, L - r):min(W, R + r)] = True
+    mask[T:B, L:R] = False
+    ring = float(M[mask].mean()) if mask.any() else 0.0
+    inside = float(M[T:B, L:R].mean()) if (B > T and R > L) else 0.0
+    return ring, inside
+
+
+def _iou(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> float:
+    ax1, ay1, bx1, by1 = a[0] + a[2], a[1] + a[3], b[0] + b[2], b[1] + b[3]
+    iw = max(0, min(ax1, bx1) - max(a[0], b[0]))
+    ih = max(0, min(ay1, by1) - max(a[1], b[1]))
+    inter = iw * ih
+    union = a[2] * a[3] + b[2] * b[3] - inter
+    return inter / union if union > 0 else 0.0
+
+
+def fit_crop_in_panel(panel: Tuple[int, int, int, int], face: Optional[Tuple[int, int, int, int]],
+                      aspect: float) -> Tuple[int, int, int, int]:
+    """Largest crop of the given aspect INSIDE the cam panel, centred on the face.
+    Cropping inside (never padding outside) keeps the game out of the cam band."""
+    x, y, w, h = panel
+    if w / max(1, h) > aspect:
+        cw, ch = int(h * aspect), h
+    else:
+        cw, ch = w, int(w / aspect)
+    cw, ch = max(2, cw - cw % 2), max(2, ch - ch % 2)
+    if face:
+        fcx, fcy = face[0] + face[2] / 2.0, face[1] + face[3] / 2.0
+    else:
+        fcx, fcy = x + w / 2.0, y + h / 2.0
+    # keep a little headroom: put the face slightly above centre
+    cx0 = int(round(fcx - cw / 2.0))
+    cy0 = int(round(fcy - ch * 0.45))
+    cx0 = max(x, min(x + w - cw, cx0))
+    cy0 = max(y, min(y + h - ch, cy0))
+    return (cx0, cy0, cw, ch)
+
+
+def gameplay_crop_avoiding(frame_w: int, frame_h: int, avoid: List[Tuple[int, int, int, int]],
+                           aspect: float, max_overlap: float = 0.0) -> Tuple[int, int, int, int]:
+    """Biggest crop of `aspect` that leaves out every cam panel (so no cam shows twice),
+    nearest the centre of the screen when several fit."""
+    best = None
+    step = max(4, frame_h // 60)
+    for ch in range(frame_h, int(frame_h * 0.45), -step):
+        cw = int(ch * aspect)
+        if cw > frame_w:
+            cw = frame_w
+            ch = int(cw / aspect)
+        xs = sorted(set([0, frame_w - cw, (frame_w - cw) // 2] + list(range(0, frame_w - cw + 1, step))))
+        ys = sorted(set([0, frame_h - ch, (frame_h - ch) // 2] + list(range(0, frame_h - ch + 1, step))))
+        for y in ys:
+            for x in xs:
+                area = cw * ch
+                ov = sum(max(0, min(x + cw, a[0] + a[2]) - max(x, a[0])) *
+                         max(0, min(y + ch, a[1] + a[3]) - max(y, a[1])) for a in avoid)
+                if ov > max_overlap * area:
+                    continue
+                d = abs(x + cw / 2 - frame_w / 2) / frame_w + abs(y + ch / 2 - frame_h / 2) / frame_h
+                if best is None or d < best[0]:
+                    best = (d, (x, y, cw, ch))
+        if best is not None:
+            x, y, cw, ch = best[1]
+            return (x - x % 2, y - y % 2, cw - cw % 2, ch - ch % 2)
+    # nothing avoids the cams: fall back to a centred crop
+    cw = min(frame_w, int(frame_h * aspect))
+    ch = min(frame_h, int(cw / aspect))
+    return ((frame_w - cw) // 2, (frame_h - ch) // 2, cw, ch)

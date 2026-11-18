@@ -1,6 +1,7 @@
 """Transcription module with faster-whisper, full stream caching, and word timestamp slicing."""
 import gc
 import json
+import re
 import logging
 import os
 import time
@@ -104,6 +105,7 @@ def transcribe_full_audio(
                     data = json.load(f)
                     if data.get("words") is not None:
                         logger.info(f"Loaded {len(data['words'])} words from full transcript cache: {abs_json}")
+                        data["words"] = collapse_repeats(data["words"])
                         return data
             except Exception as e:
                 logger.warning(f"Failed to read full transcript cache {abs_json}: {e}. Re-transcribing.")
@@ -126,6 +128,7 @@ def transcribe_full_audio(
             batched = BatchedInferencePipeline(model=model)
             segments_gen, info = batched.transcribe(
                 abs_audio, word_timestamps=True, batch_size=batch_size, vad_filter=True,
+                **_ANTI_LOOP,
             )
             logger.info(f"Using batched Whisper (batch_size={batch_size}).")
         except Exception as e:
@@ -137,6 +140,8 @@ def transcribe_full_audio(
             word_timestamps=True,
             vad_filter=vad_on,
             vad_parameters=dict(min_silence_duration_ms=500) if vad_on else None,
+            condition_on_previous_text=False,
+            **_ANTI_LOOP,
         )
 
     total_sec = float(getattr(info, "duration", 0.0) or 0.0)
@@ -172,6 +177,7 @@ def transcribe_full_audio(
                     "probability": round(getattr(w, "probability", 1.0), 3),
                 })
 
+    words_list = collapse_repeats(words_list)
     result_data = {
         "source": abs_audio,
         "language": info.language,
@@ -190,6 +196,52 @@ def transcribe_full_audio(
             logger.warning(f"Could not save full transcript JSON: {e}")
 
     return result_data
+
+
+# Whisper sometimes gets stuck repeating a phrase ("I know what it is" x20, "oh oh oh ...")
+# over music, crowd noise or chanting. These settings make that rarer...
+_ANTI_LOOP = dict(
+    repetition_penalty=1.1,
+    compression_ratio_threshold=2.2,
+)
+
+
+def collapse_repeats(words: List[Dict[str, Any]], max_repeats: int = 3, max_n: int = 6) -> List[Dict[str, Any]]:
+    """...and this cleans up what still gets through: a word or phrase (up to 6 words)
+    repeated back to back more than `max_repeats` times is kept only `max_repeats` times.
+    Captions stay readable and the hook can't become "What What What What"."""
+    if not words:
+        return words
+
+    def norm(w):
+        return re.sub(r"[^\w']", "", str(w.get("word", ""))).lower()
+
+    toks = [norm(w) for w in words]
+    keep = [True] * len(words)
+    i = 0
+    while i < len(words):
+        done = False
+        for n in range(1, max_n + 1):
+            if i + 2 * n > len(words) or not all(toks[i:i + n]):
+                continue
+            unit = toks[i:i + n]
+            reps = 1
+            j = i + n
+            while j + n <= len(words) and toks[j:j + n] == unit:
+                reps += 1
+                j += n
+            if reps > max_repeats:
+                for k in range(i + n * max_repeats, j):
+                    keep[k] = False
+                i = j
+                done = True
+                break
+        if not done:
+            i += 1
+    out = [w for w, k in zip(words, keep) if k]
+    if len(out) < len(words):
+        logger.info(f"Removed {len(words) - len(out)} looped/repeated words from the transcript")
+    return out
 
 
 def slice_transcript(
@@ -290,6 +342,8 @@ def transcribe_clip(
         word_timestamps=True,
         vad_filter=vad_on,
         vad_parameters=dict(min_silence_duration_ms=500) if vad_on else None,
+        condition_on_previous_text=False,
+        **_ANTI_LOOP,
     )
 
     words: List[Tuple[float, float, str]] = []

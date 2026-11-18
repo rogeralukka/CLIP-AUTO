@@ -128,6 +128,7 @@ def perform_qc_check(
     facecam_info: Optional[Dict[str, Any]] = None,
     word_count: int = 0,
     layout: str = "gameplay",
+    source_height: int = 0,
 ) -> Dict[str, Any]:
     """Execute all quality checks on a rendered clip and return structured report."""
     cfg = load_config()
@@ -171,7 +172,7 @@ def perform_qc_check(
     # 5. Facecam presence
     presence_ratio = facecam_info.get("presence_ratio", 0.0) if facecam_info else 0.0
     facecam_ok = True
-    if layout == "split":
+    if layout in ("split", "duo"):
         facecam_ok = presence_ratio >= 0.50
 
     # 6. Possible music / dead air heuristic
@@ -193,6 +194,8 @@ def perform_qc_check(
         flags.append(f"Detected {len(mid_frozen)} frozen frame sequence(s)")
     if not facecam_ok:
         flags.append(f"Split layout used but facecam presence is low ({presence_ratio:.1%})")
+    if source_height and source_height < 720:
+        flags.append(f"Source video was only {source_height}p from YouTube, so this clip looks soft")
     if possible_music:
         flags.append("Possible copyrighted music / no speech detected during loud audio")
 
@@ -215,6 +218,7 @@ def perform_qc_check(
         "measured_lufs": round(measured_lufs, 2),
         "target_lufs": target_lufs,
         "presence_ratio": presence_ratio,
+        "source_height": source_height,
         "flags": flags,
     }
 

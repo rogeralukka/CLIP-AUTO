@@ -157,8 +157,14 @@ def get_node_runtime_path() -> Optional[str]:
     return None
 
 
-def get_ytdlp_cmd(input_source: Optional[str] = None) -> List[str]:
-    """Return yt-dlp binary with standard flags for JS runtime and YouTube anti-bot workarounds."""
+def get_ytdlp_cmd(input_source: Optional[str] = None, player_client: Optional[str] = None) -> List[str]:
+    """Return yt-dlp binary with standard flags (JS runtime, cookies).
+
+    YouTube player clients are NOT forced by default. Forcing "android,web" (as before)
+    made YouTube hand over only its 360p fallback file (format 18) for every stream.
+    yt-dlp's own default client list is kept up to date with YouTube; when a specific
+    client is needed, `pick_youtube_client` finds it and passes it in.
+    """
     ytdlp_bin = get_ytdlp_path()
     cmd = [ytdlp_bin]
 
@@ -167,7 +173,9 @@ def get_ytdlp_cmd(input_source: Optional[str] = None) -> List[str]:
         cmd.extend(["--js-runtimes", f"node:{node_bin}"])
 
     if input_source and is_youtube(input_source):
-        cmd.extend(["--extractor-args", "youtube:player_client=android,web"])
+        forced = player_client or load_config().get("download", {}).get("youtube_player_client")
+        if forced:
+            cmd.extend(["--extractor-args", f"youtube:player_client={forced}"])
 
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for cand in ("cookies.txt", os.path.join("config", "cookies.txt")):
@@ -177,6 +185,89 @@ def get_ytdlp_cmd(input_source: Optional[str] = None) -> List[str]:
             break
 
     return cmd
+
+
+# Client sets tried in order when picking where to download a YouTube video from.
+# "" = yt-dlp's defaults (best choice whenever yt-dlp is up to date).
+YOUTUBE_CLIENT_CANDIDATES = ["", "tv", "web_safari", "android_vr", "mweb", "tv_embedded", "android,web"]
+
+
+def _max_video_height(info: Dict[str, Any], cap: int) -> int:
+    best = 0
+    for f in info.get("formats", []) or []:
+        h = f.get("height") or 0
+        if f.get("vcodec") in (None, "none") or not h:
+            continue
+        if h <= cap and h > best:
+            best = int(h)
+    return best
+
+
+def pick_youtube_client(input_source: str, target_height: int = 1080,
+                        output_dir: str = "downloads") -> Tuple[Optional[str], int]:
+    """Find the YouTube player client that offers the sharpest video (up to target_height).
+
+    Returns (client or None for yt-dlp defaults, best height found). The answer is cached
+    per stream for a few hours so every clip of a job uses the same, already-checked client.
+    """
+    import time as _time
+    vod_dir = os.path.abspath(os.path.join(output_dir, get_vod_id(input_source)))
+    os.makedirs(vod_dir, exist_ok=True)
+    cache_file = os.path.join(vod_dir, "video_client.json")
+    try:
+        with open(cache_file, "r", encoding="utf-8") as f:
+            c = json.load(f)
+        if c.get("target") == target_height and _time.time() - c.get("at", 0) < 6 * 3600 and c.get("height", 0) > 0:
+            return (c.get("client") or None), int(c["height"])
+    except Exception:
+        pass
+
+    configured = load_config().get("download", {}).get("youtube_player_client")
+    candidates = [configured] if configured else list(YOUTUBE_CLIENT_CANDIDATES)
+    best_client, best_h = None, 0
+    for client in candidates:
+        cmd = get_ytdlp_cmd(input_source, player_client=client or None) + ["-J", "--no-playlist", input_source]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=90,
+                                 encoding="utf-8", errors="ignore")
+            if res.returncode != 0 or not res.stdout.strip():
+                logger.info(f"yt-dlp client '{client or 'default'}': no formats ({(res.stderr or '').strip()[-200:]})")
+                continue
+            h = _max_video_height(json.loads(res.stdout), target_height)
+        except Exception as e:
+            logger.info(f"yt-dlp client '{client or 'default'}' probe failed: {e}")
+            continue
+        logger.info(f"yt-dlp client '{client or 'default'}': best video {h}p")
+        if h > best_h:
+            best_client, best_h = (client or None), h
+        if h >= target_height:
+            break
+
+    if best_h and best_h < min(720, target_height):
+        logger.warning(
+            f"YouTube only offered {best_h}p video for {input_source}. Clips will look soft. "
+            "Update yt-dlp (python -m pip install -U \"yt-dlp[default]\"), make sure Node.js is "
+            "installed, or put a cookies.txt from your browser in the config folder."
+        )
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump({"client": best_client or "", "height": best_h, "target": target_height,
+                       "at": _time.time()}, f)
+    except Exception:
+        pass
+    return best_client, best_h
+
+
+def video_height(path: str) -> int:
+    """Pixel height of a video file (0 if unknown)."""
+    try:
+        import cv2
+        cap = cv2.VideoCapture(path)
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        cap.release()
+        return h
+    except Exception:
+        return 0
 
 
 def get_available_qualities(input_source: str) -> List[Dict[str, Any]]:
@@ -598,10 +689,26 @@ def download_video_section(
     sec_filename = f"sec_{int(actual_start)}_{int(math.ceil(actual_end))}_{quality}.mp4"
     section_dest = os.path.join(sections_dir, sec_filename)
 
-    # Cache hit
+    height = {"1080p": 1080, "720p": 720, "480p": 480}.get(quality, 1080)
+    yt_client: Optional[str] = None
+    yt_best = 0
+    if is_url(input_source) and is_youtube(input_source):
+        yt_client, yt_best = pick_youtube_client(input_source, height, output_dir)
+
+    # Cache hit (but never reuse a low-res piece when a sharper one is on offer:
+    # older versions saved 360p files under the 1080p name)
     if os.path.isfile(section_dest) and os.path.getsize(section_dest) > 1024:
-        logger.info(f"Using cached video section: {section_dest}")
-        return section_dest, offset
+        have = video_height(section_dest)
+        want = min(height, yt_best) if yt_best else height
+        if have and have < want * 0.9:
+            logger.info(f"Cached section is only {have}p, {want}p is available: downloading again")
+            try:
+                os.remove(section_dest)
+            except OSError:
+                pass
+        else:
+            logger.info(f"Using cached video section: {section_dest}")
+            return section_dest, offset
 
     # Local file cut
     if not is_url(input_source):
@@ -650,12 +757,11 @@ def download_video_section(
     # YouTube / Kick section download via yt-dlp.
     # Take the best stream up to the chosen height (VP9/AV1 too, they look better than
     # YouTube's H.264 at the same resolution); avoid HDR, which would need tone-mapping.
-    height = {"1080p": 1080, "720p": 720, "480p": 480}.get(quality, 1080)
     format_selector = f"bv*[height<={height}]+ba/b[height<={height}]/bv*+ba/b"
     sort_order = f"res:{height},fps,hdr:SDR,vbr"
 
     time_range = f"*{format_section_timestamp(actual_start)}-{format_section_timestamp(actual_end)}"
-    cmd = get_ytdlp_cmd(input_source) + [
+    cmd = get_ytdlp_cmd(input_source, player_client=yt_client) + [
         "--download-sections", time_range,
         # Without this, sections start on the previous keyframe and the
         # computed offset (and therefore the captions) drift by seconds.
@@ -681,6 +787,8 @@ def download_video_section(
     if ret != 0:
         raise RuntimeError(f"yt-dlp section download failed with code {ret}")
 
+    got = video_height(section_dest)
+    logger.info(f"Section {os.path.basename(section_dest)} is {got}p (asked for {height}p, best offered {yt_best}p)")
     return section_dest, offset
 
 
