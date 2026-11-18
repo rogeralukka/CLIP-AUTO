@@ -103,3 +103,41 @@ class TestLayoutsV2(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- captions at the seams + emoji
+def test_caption_anchor_sits_on_seam_or_below_middle():
+    from clipper.cutter import TOP_BAND, caption_anchor_y, plan_cam_band
+    info = {"frame_size": (1920, 1080), "cams": [{"rect": (1437, 0, 480, 321)}]}
+    cam_h = plan_cam_band("split", info)
+    assert 360 <= cam_h <= 800
+    assert caption_anchor_y("split", info) == TOP_BAND + cam_h
+    two = {"frame_size": (1920, 1080), "cams": [{"rect": (0, 0, 480, 321)}, {"rect": (1437, 0, 480, 321)}]}
+    assert caption_anchor_y("duo", two) == TOP_BAND + plan_cam_band("duo", two)
+    # a single picture: a bit below the middle of the 1920px frame
+    assert 960 < caption_anchor_y("gameplay", None) < 1200
+
+
+def test_make_ass_places_captions_at_given_y_and_plans_emoji(tmp_path):
+    import json
+    from clipper.captions import make_ass
+    words = [(0.2 + i * 0.3, 0.45 + i * 0.3, w) for i, w in enumerate("HAHAHA THAT IS FUNNY MONEY IS HERE".split())]
+    ass = str(tmp_path / "c.ass")
+    make_ass(words, ass, layout="split", caption_y=900)
+    text = open(ass, encoding="utf-8-sig").read()
+    assert r"\an5\pos(540,900)" in text
+    events = json.load(open(str(tmp_path / "c.emoji.json")))
+    assert events and all(e["path"].endswith(".png") for e in events)
+    # an old plan never leaks into a clip without emoji matches
+    make_ass([(0.0, 0.3, "THE"), (0.3, 0.6, "TABLE")], ass, layout="split", caption_y=900)
+    assert json.load(open(str(tmp_path / "c.emoji.json"))) == []
+
+
+def test_emoji_planner_spaces_out_and_never_repeats_back_to_back():
+    from clipper.emoji import plan_emoji_events
+    cards = [[(i * 0.5, i * 0.5 + 0.4, "money")] for i in range(12)]
+    ev = plan_emoji_events(cards)
+    assert 1 <= len(ev) <= 14
+    starts = [e[0] for e in ev]
+    assert all(b - a >= 1.6 - 1e-6 for a, b in zip(starts, starts[1:]))
+    assert all(a[2] != b[2] for a, b in zip(ev, ev[1:]))

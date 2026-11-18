@@ -432,6 +432,13 @@ def detect_facecam(
         logger.warning(f"Cam panel search failed: {e}")
         cams = []
 
+    # Cams without a rectangle (green screen: the person is cut out over the game)
+    try:
+        cams = cams + find_cutout_cams(_stable_clusters(all_detections, frame_w, frame_h, total_samples),
+                                       frames, cams, frame_w, frame_h, total_samples)
+    except Exception as e:
+        logger.warning(f"Cutout cam search failed: {e}")
+
     # How many people are on screen at once (big faces, outside any cam)
     def _in_cam(b):
         cx, cy = b[0] + b[2] / 2.0, b[1] + b[3] / 2.0
@@ -962,3 +969,61 @@ def cam_tile_geometry(rect: Tuple[int, int, int, int], cell_w: int, max_h: int,
     tw = max(2, int(round(w * s)))
     th = max(2, int(round(h * s)))
     return tw - tw % 2, th - th % 2, s
+
+
+# --------------------------------------------------------------------------- cutout (green-screen) cams
+def cutout_region(face: Tuple[int, int, int, int], frame_w: int, frame_h: int) -> Tuple[int, int, int, int]:
+    """Head-to-shoulders area for a green-screen cam (the person cut out over the game).
+
+    Wide enough for shoulders and arms, from above the head down to the screen edge when the
+    person sits at the bottom of the screen (they usually do)."""
+    fx, fy, fw, fh = face
+    w = int(min(frame_w * 0.45, max(fw * 4.0, frame_w * 0.2)))
+    x = int(round(fx + fw / 2.0 - w / 2.0))
+    x = max(0, min(frame_w - w, x))
+    y0 = max(0, int(round(fy - fh * 0.9)))
+    y1 = frame_h if (fy + fh) > frame_h * 0.5 else min(frame_h, int(fy + fh * 3.6))
+    h = max(2, y1 - y0)
+    return (x - x % 2, y0 - y0 % 2, w - w % 2, h - h % 2)
+
+
+def find_cutout_cams(clusters: List[Dict[str, Any]], frames: List[np.ndarray], cams: List[Dict[str, Any]],
+                     frame_w: int, frame_h: int, total: int, min_presence: float = 0.5) -> List[Dict[str, Any]]:
+    """Cams without a rectangle: a person cut out over the game (green screen).
+
+    A cutout is a big face that stays put (it moves a little, but stays in one area) outside
+    every cam rectangle, with the game MOVING around it. A person in a real room (IRL) has a
+    still wall around them, so that is not taken as a cam."""
+    if len(frames) < 3 or not clusters:
+        return []
+    M = motion_map(frames, (640, int(round(640 * frame_h / float(frame_w)))))
+    sc = 640.0 / frame_w
+    out: List[Dict[str, Any]] = []
+    for c in clusters:
+        fx, fy, fw, fh = c["median_box"]
+        # A cutout person is seen at cam size (face ~10-18% of the screen height); bigger faces
+        # are IRL close-ups, smaller ones are game characters or the crowd.
+        if c["count"] < min_presence * total or not (0.07 * frame_h <= fh <= 0.22 * frame_h):
+            continue
+        cx, cy = fx + fw / 2.0, fy + fh / 2.0
+        if any(r["rect"][0] <= cx <= r["rect"][0] + r["rect"][2] and r["rect"][1] <= cy <= r["rect"][1] + r["rect"][3]
+               for r in cams + out):
+            continue
+        centres = [(b[0] + b[2] / 2.0, b[1] + b[3] / 2.0) for _, b in c["boxes"]]
+        drift = max(np.std([p[0] for p in centres]) / frame_w, np.std([p[1] for p in centres]) / frame_h)
+        if drift > 0.05:
+            continue
+        rect = cutout_region(c["median_box"], frame_w, frame_h)
+        # The game must be moving around the person
+        L, T = int(rect[0] * sc), int(rect[1] * sc)
+        R, B = int((rect[0] + rect[2]) * sc), int((rect[1] + rect[3]) * sc)
+        ring, _ = _ring_motion(M, (L, T, min(R, M.shape[1]), min(B, M.shape[0])))
+        if ring < 4.0:
+            continue
+        cxn, cyn = (rect[0] + rect[2] / 2.0) / frame_w, (rect[1] + rect[3] / 2.0) / frame_h
+        out.append({
+            "rect": rect, "face_box": c["median_box"], "presence": round(c["count"] / float(total), 3),
+            "real_sides": 0, "edge_cov": 0.0, "kind": "cutout",
+            "corner": f"{'top' if cyn < 0.5 else 'bottom'}_{'left' if cxn < 0.5 else 'right'}",
+        })
+    return out

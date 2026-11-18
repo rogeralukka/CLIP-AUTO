@@ -4,6 +4,21 @@ This document provides a comprehensive log of all architectural improvements, up
 
 ---
 
+## 2026-11-18 (later still): green-screen streamers, captions on the seams, emojis
+
+- **Green-screen cams (IShowSpeed):** a streamer cut out over the game has no cam border, so the
+  panel finder missed them and only the box-cam streamer (Kai) was shown. A second finder now
+  looks for a stable face that sits outside every cam panel (game moving around it) and shows a
+  head-to-shoulders region as their cam. Two streamers -> the two-cam "duo" layout, both whole.
+  This frames the person (game visible behind them); it is not background removal.
+- **Captions on the seams:** for cam + game layouts the caption is centred on the border between
+  the cam section(s) and the game; for a single picture (Framed, IRL, face) it sits a bit below the
+  middle. The seam comes from the same numbers that size the cam band (`plan_cam_band`).
+- **Emojis:** small pictures (`assets/emoji/*.png`, from Noto Color Emoji, SIL OFL) laid above the
+  caption while matching words are said (haha -> laugh, money -> bag, dead -> skull ...). At most one
+  per ~1.6 s, never the same twice in a row, generic ones limited. Pictures, not text, because text
+  emoji break on many Windows ffmpeg builds. Plan is saved next to the .ass (`*.emoji.json`).
+
 ## 2026-11-18 (later): cams shown whole, not chopped
 
 - Cams were cropped to a narrow slice inside their rectangle and stretched 2-3x to fill the

@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .captions import extract_hook_phrase, load_preset, make_ass
 from .config import load_config
-from .cutter import cut_rough_clip, render_vertical_clip
+from .cutter import caption_anchor_y, cut_rough_clip, render_vertical_clip
 from .detection import find_moments
 from .downloader import get_vod_id
 from .facecam import detect_facecam
@@ -277,7 +277,8 @@ class LiveStreamClipper:
 
             # Hook title & ASS
             hook_title = extract_hook_phrase(words)
-            make_ass(words, ass_path, preset=preset, layout=layout, hook_title=hook_title)
+            make_ass(words, ass_path, preset=preset, layout=layout, hook_title=hook_title,
+                     caption_y=caption_anchor_y(layout, facecam))
 
             # Render vertical 9:16
             render_vertical_clip(

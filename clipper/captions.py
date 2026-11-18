@@ -182,6 +182,8 @@ def make_ass(
     layout: str = "auto",
     hook_title: Optional[str] = None,
     hook_duration: float = 2.5,
+    caption_y: Optional[int] = None,
+    emojis: bool = True,
 ) -> str:
     """Create a word-by-word karaoke ASS subtitle file with optional hook title card.
 
@@ -194,6 +196,10 @@ def make_ass(
         layout: Vertical video layout ('split', 'gameplay', 'face', or 'auto').
         hook_title: Big bold hook text displayed for first hook_duration seconds.
         hook_duration: Duration to display hook title (default 2.5s).
+        caption_y: Vertical centre of the captions in the 1080x1920 frame. For cam + game
+            layouts this is the border between the sections; for a single picture just below
+            the middle. None keeps the old bottom-band position.
+        emojis: Also plan emoji pictures (written next to the .ass as <name>.emoji.json).
     """
     if preset is None:
         preset = dict(DEFAULT_PRESET)
@@ -251,6 +257,8 @@ def make_ass(
             r"{\kf%d}%s" % (max(1, int(round((e - s) * 100))), t.upper())
             for s, e, t in g
         )
+        if caption_y is not None:
+            card_text = r"{\an5\pos(540,%d)}" % int(caption_y) + card_text
         lines.append(f"Dialogue: 0,{fmt_ts(g[0][0])},{fmt_ts(g[-1][1])},Cap,,0,0,0,,{card_text}")
 
     content = build_ass_header(preset, hook_margin_v=hook_margin_v) + "\n".join(lines) + "\n"
@@ -259,8 +267,25 @@ def make_ass(
     with open(output_path, "w", encoding="utf-8-sig") as f:
         f.write(content)
 
+    _write_emoji_plan(output_path, groups if emojis else [], caption_y)
+
     logger.info(f"Generated ASS subtitles with hook ('{final_hook}'): {output_path}")
     return os.path.abspath(output_path)
+
+
+def _write_emoji_plan(ass_path: str, groups, caption_y: Optional[int]) -> None:
+    """Pick emoji for some caption cards and save the plan beside the .ass (always rewritten,
+    so an old plan never leaks into a re-render)."""
+    from .emoji import plan_emoji_events
+    # Emoji sit just above the caption line (caption centre minus ~135 px)
+    anchor = int(caption_y) if caption_y is not None else 1500
+    events = [
+        {"start": s, "end": e, "emoji": emo, "path": path, "y": max(0, anchor - 135 - 75)}
+        for s, e, emo, path in (plan_emoji_events(groups) if groups else [])
+    ]
+    side = os.path.splitext(ass_path)[0] + ".emoji.json"
+    with open(side, "w", encoding="utf-8") as f:
+        json.dump(events, f)
 
 
 def escape_ffmpeg_ass_path(ass_path: str) -> str:

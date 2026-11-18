@@ -250,6 +250,57 @@ def build_pan_expression(track: List[Any], crop_w: int, src_w: int) -> str:
     return f"if(lt(t,{pts[0][0]}),{pts[0][1]},{expr})"
 
 
+TOP_BAND, MID_BAND = 192, 1536   # hook band; the 8 middle bands (the last 192 is the caption band)
+
+
+def _read_emoji_events(ass_path: Optional[str]) -> List[Dict[str, Any]]:
+    """Emoji pictures planned next to the caption file (see captions.make_ass)."""
+    if not ass_path:
+        return []
+    side = os.path.splitext(ass_path)[0] + ".emoji.json"
+    try:
+        with open(side, "r", encoding="utf-8") as f:
+            events = json.load(f)
+        return [e for e in events if os.path.isfile(e.get("path", ""))]
+    except (OSError, ValueError):
+        return []
+
+
+def _cam_max_scale() -> float:
+    pol = load_config().get("polish", {})
+    ai_on = upscale_enabled()
+    return float(pol.get("cam_max_upscale_ai" if ai_on else "cam_max_upscale", 2.2 if ai_on else 1.5))
+
+
+def plan_cam_band(layout: str, facecam_info: Optional[Dict[str, Any]],
+                  cam_max_scale: Optional[float] = None) -> Optional[int]:
+    """Height of the cam section for the cam + game layouts ('split', 'duo'); None for a
+    single picture. The same numbers drive the picture and the caption position, so the
+    captions can sit exactly on the border between the sections."""
+    info = facecam_info or {}
+    cams = list(info.get("cams") or [])
+    src_w, src_h = info.get("frame_size", (1920, 1080))
+    scale = cam_max_scale if cam_max_scale is not None else _cam_max_scale()
+    if layout == "duo" and len(cams) >= 2:
+        a, b = sorted(cams[:2], key=lambda c: c["rect"][0])
+        th_a = cam_tile_geometry(tuple(a["rect"]), 540, 700, scale)[1]
+        th_b = cam_tile_geometry(tuple(b["rect"]), 540, 700, scale)[1]
+        return max(300, min(700, max(th_a, th_b)))
+    if layout in ("split", "duo"):
+        rect = cam_region(info, cams[0] if cams else None, src_w, src_h)
+        return max(360, min(800, cam_tile_geometry(rect, 1080, 800, scale)[1]))
+    return None
+
+
+def caption_anchor_y(layout: str, facecam_info: Optional[Dict[str, Any]]) -> int:
+    """Vertical centre (px of 1920) for the captions: on the border between the cam section(s)
+    and the game, or just below the middle when the clip is a single picture."""
+    cam_h = plan_cam_band(layout, facecam_info)
+    if cam_h is not None:
+        return TOP_BAND + cam_h
+    return 1080
+
+
 def render_vertical_clip(
     rough_clip_path: str,
     ass_path: Optional[str],
@@ -305,10 +356,9 @@ def render_vertical_clip(
 
     # Extra inputs (AI-sharpened cam pictures) go after the clip itself
     extra_inputs: List[str] = []
-    pol_cfg = load_config().get("polish", {})
     ai_on = upscale_enabled()
     # Cam pictures are shown whole and enlarged at most this much (more looks soft/chopped)
-    cam_max_scale = float(pol_cfg.get("cam_max_upscale_ai" if ai_on else "cam_max_upscale", 2.2 if ai_on else 1.5))
+    cam_max_scale = _cam_max_scale()
 
     def cam_tile(src_label: str, bg_label: str, rect: Tuple[int, int, int, int], cell_w: int,
                  band_h: int, max_h: int, tag: str, out: str) -> Tuple[List[str], str, int, int]:
@@ -335,14 +385,13 @@ def render_vertical_clip(
         parts.append(f"[{out}_bg][{out}_fg] overlay=(W-w)/2:(H-h)/2 [{out}]")
         return parts, ("ai" if fg else "src"), tw, th
 
-    TOP, MID = 192, 1536   # hook band; the 8 middle bands (the last 192 is the caption band)
+    TOP, MID = TOP_BAND, MID_BAND
     if active_layout == "split":
         # Facecam + gameplay: the whole cam (capped zoom) on top, the game below it, hook in the
         # top band and captions in the bottom band so neither covers the cam or the game.
         cam = cams[0] if cams else None
         rect = cam_region(facecam_info, cam, src_w, src_h)
-        _, th0, _ = cam_tile_geometry(rect, 1080, 800, cam_max_scale)
-        cam_h = max(360, min(800, th0))
+        cam_h = plan_cam_band("split", facecam_info, cam_max_scale)
         game_h = MID - cam_h
         gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, [rect], 1080.0 / game_h)
         tile, kind, tw, th = cam_tile("c0", "c1", rect, 1080, cam_h, 800, "cam", "camt")
@@ -358,9 +407,7 @@ def render_vertical_clip(
         # Two streamers (co-op): both whole cams side by side (540 wide each), game below.
         a, b = sorted(cams[:2], key=lambda c: c["rect"][0])
         ra, rb = tuple(a["rect"]), tuple(b["rect"])
-        th_a = cam_tile_geometry(ra, 540, 700, cam_max_scale)[1]
-        th_b = cam_tile_geometry(rb, 540, 700, cam_max_scale)[1]
-        cam_h = max(300, min(700, max(th_a, th_b)))
+        cam_h = plan_cam_band("duo", facecam_info, cam_max_scale)
         game_h = MID - cam_h
         gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, [ra, rb], 1080.0 / game_h)
         ta, ka, taw, tah = cam_tile("a0", "a1", ra, 540, cam_h, 700, "cam_a", "cama")
@@ -441,15 +488,30 @@ def render_vertical_clip(
         filter_parts.append(f"{curr_v} {ass_filter} [v_sub]")
         curr_v = "[v_sub]"
 
+    inputs = ["-i", abs_rough] + extra_inputs
+
+    def n_inputs() -> int:
+        return inputs.count("-i")
+
+    # Emoji reactions: little pictures shown above the caption while the matching words play
+    for k, ev in enumerate(_read_emoji_events(ass_path)):
+        em_idx = n_inputs()
+        inputs.extend(["-loop", "1", "-i", ev["path"]])
+        filter_parts.append(
+            f"[{em_idx}:v] format=rgba,scale=150:150 [emo{k}]; "
+            f"{curr_v}[emo{k}] overlay=x=(W-w)/2:y={int(ev['y'])}:"
+            f"enable='between(t,{ev['start']:.2f},{ev['end']:.2f})':shortest=1 [emv{k}]"
+        )
+        curr_v = f"[emv{k}]"
+
     # Burn in overlay image if present
     overlay_img = overlay.get("image_path") if overlay else None
     has_overlay = overlay_img and os.path.isfile(overlay_img)
 
-    inputs = ["-i", abs_rough] + extra_inputs
     if has_overlay:
         abs_overlay = os.path.abspath(overlay_img)
+        ov_idx = n_inputs()
         inputs.extend(["-i", abs_overlay])
-        ov_idx = len(inputs) // 2 - 1
         ox = str(overlay.get("x", "(W-w)/2"))
         oy = str(overlay.get("y", "120"))
         ow = str(overlay.get("width", -1))

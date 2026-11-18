@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .captions import extract_hook_phrase, load_preset, make_ass
 from .config import load_config
-from .cutter import attach_stream_audio, cut_rough_clip, render_vertical_clip
+from .cutter import attach_stream_audio, caption_anchor_y, cut_rough_clip, render_vertical_clip
 from .detection import find_moments
 from .downloader import (
     download_audio_and_chat,
@@ -442,7 +442,8 @@ def render_pipeline_moments(
             hook_title = extract_hook_phrase(words)
 
         # Step C: Subtitles ASS adapted to layout with Hook Title
-        make_ass(words, ass_path, preset=preset, layout=active_layout, hook_title=hook_title)
+        make_ass(words, ass_path, preset=preset, layout=active_layout, hook_title=hook_title,
+                 caption_y=caption_anchor_y(active_layout, facecam_info))
 
         # Step D: Render Vertical 9:16
         clip_step(0.65, f"Clip {i} of {total}: rendering 9:16 ({active_layout})")
@@ -664,7 +665,8 @@ def rerender_clip(clip: Dict[str, Any], layout: Optional[str] = None, hook_title
     new_layout, layout_note = resolve_layout(new_layout, facecam_info, explicit=(layout is not None))
 
     preset = load_preset(preset_name or clip.get("preset") or "classic_yellow")
-    make_ass(words, ass, preset=preset, layout=new_layout, hook_title=new_hook or None)
+    make_ass(words, ass, preset=preset, layout=new_layout, hook_title=new_hook or None,
+             caption_y=caption_anchor_y(new_layout, facecam_info))
     render_vertical_clip(rough, ass, clip["path"], overlay=overlay, use_cpu=cpu,
                          layout=new_layout, facecam_info=facecam_info)
 
