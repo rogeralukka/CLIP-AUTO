@@ -20,6 +20,7 @@ class TestCleanApp(unittest.TestCase):
             self.assertIn("size unknown", o["label"])
 
     def test_campaign_crud(self):
+        initial_count = len(list_campaigns("campaigns"))
         cid = save_campaign({
             "name": "Valorant Creator Program",
             "streamer": "AcePlayer",
@@ -32,9 +33,10 @@ class TestCleanApp(unittest.TestCase):
         })
         camps = list_campaigns("campaigns")
         self.assertTrue(any(c["id"] == cid for c in camps))
+        target_camp = next(c for c in camps if c["id"] == cid)
 
         # Check metadata with campaign
-        meta = generate_clip_metadata({"transcript": "unbelievable ace in round five"}, camps[0])
+        meta = generate_clip_metadata({"transcript": "unbelievable ace in round five"}, target_camp)
         self.assertIn("AcePlayer", meta["title"])
         self.assertIn("Unbelievable ace", meta["title"])
         self.assertIn("#val", meta["hashtags"])
@@ -49,7 +51,8 @@ class TestCleanApp(unittest.TestCase):
         # Delete campaign
         res = delete_campaign(cid)
         self.assertTrue(res)
-        self.assertEqual(len(list_campaigns("campaigns")), 0)
+        self.assertFalse(any(c["id"] == cid for c in list_campaigns("campaigns")))
+        self.assertEqual(len(list_campaigns("campaigns")), initial_count)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,45 @@
+name: Adin Ross Live Stream Clipper Pool
+streamer: Adin Ross
+platform: kick
+min_clip_length: 15
+max_clip_length: 60
+preset: classic_yellow
+overlay: null
+required_hashtags:
+- '#adinross'
+- '#kickstream'
+- '#adinlive'
+required_disclosure: ''
+allowed_upload_platforms:
+- tiktok
+- youtube
+- instagram
+rules_note: 'Bounty: Adin Ross Live Stream Clipper Pool (Streamer Discord)
+
+  Payout: $15,000 Pool (PPV + Leaderboard)
+
+  Link: https://discord.gg/adin
+
+
+  Post viral Kick highlights to TikTok/Shorts. Submit video links to the Adin Discord
+  clipping bot.'
+risk_words:
+- leak
+- leaked
+- spoiler
+- spoilers
+- banned
+- dmca
+- copyright
+- slur
+- n-word
+- scam
+- cheat
+- hack
+- dox
+- doxxed
+- address
+assigned_account_id: acc_adin_hub
+bounty_url: https://discord.gg/adin
+payout: $15,000 Pool (PPV + Leaderboard)
+bounty_source: discord

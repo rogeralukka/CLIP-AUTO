@@ -18,7 +18,7 @@ const platformOf = l => /twitch\.tv/.test(l) ? "Twitch" : /youtu/.test(l) ? "You
 const SIG = { chat_rate: ["Chat speed", "#d7ff3a"], chat_keywords: ["Chat words", "#ff4f8b"], streamer_loudness: ["Loudness", "#5aa8ff"], speech_energy: ["Speech", "#ffb23a"], youtube_heatmap: ["Replays", "#b78cff"] };
 const STAGES = [["download", "Download"], ["transcribe", "Transcribe"], ["detect", "Find moments"], ["selection", "Review"], ["render", "Render"]];
 
-const S = { jobs: [], sys: null, campaigns: [], accounts: [], scheduleQueue: [], route: "new", arg: null, focus: 0, clipFilter: "all", draft: {} };
+const S = { jobs: [], sys: null, campaigns: [], accounts: [], bounties: [], scheduleQueue: [], route: "new", arg: null, focus: 0, clipFilter: "all", draft: {} };
 
 /* ---------------- polling ---------------- */
 async function refresh() {
@@ -36,9 +36,11 @@ async function refresh() {
     const pending = S.jobs.reduce((n, j) => n + (j.clips || []).filter(c => (c.status || "PENDING") === "PENDING").length, 0);
     $("#b-queue").textContent = running || ""; $("#b-review").textContent = review || ""; $("#b-clips").textContent = pending || "";
     const bSched = $("#b-schedule"); if (bSched) bSched.textContent = qPosts.length || "";
+    const bBounties = $("#b-bounties"); if (bBounties && S.bounties) bBounties.textContent = S.bounties.filter(b => b.status === "HOT").length ? "HOT" : "";
     if (S.route === "queue") renderQueue();
     if (S.route === "clips") updateClipsLive();
     if (S.route === "schedule" && !document.activeElement.matches("input,textarea,select")) renderSchedule(false);
+    if (S.route === "bounties" && !document.activeElement.matches("input,textarea,select") && !BOUNTIES.adding) renderBounties(false);
   } catch (e) { /* server restarting */ }
 }
 async function refreshSys() {
@@ -56,7 +58,7 @@ function route() {
   const [r, arg] = (location.hash.slice(1) || "new").split("/");
   S.route = r; S.arg = arg || null; S.focus = 0;
   $$("#nav a").forEach(a => a.classList.toggle("on", a.dataset.page === r));
-  ({ new: renderNew, queue: renderQueue, review: renderReview, clips: renderClips, schedule: () => renderSchedule(true), live: renderLive, campaigns: renderCampaigns, settings: renderSettings }[r] || renderNew)();
+  ({ new: renderNew, queue: renderQueue, review: renderReview, clips: renderClips, schedule: () => renderSchedule(true), bounties: () => renderBounties(true), live: renderLive, campaigns: renderCampaigns, settings: renderSettings }[r] || renderNew)();
 }
 window.addEventListener("hashchange", route);
 
@@ -114,7 +116,8 @@ async function renderNew() {
   links.oninput = upd; upd();
   const showRules = () => {
     const c = S.campaigns.find(x => x.id === $("#camp").value); d.camp = $("#camp").value;
-    $("#rules").innerHTML = c ? `<b style="color:var(--tx)">${esc(c.name)}</b>${c.streamer ? " · " + esc(c.streamer) : ""}\nLength: ${c.min_clip_length || 15}–${c.max_clip_length || 60}s\nPlatforms: ${esc((c.allowed_upload_platforms || []).join(", ") || "any")}\nHashtags: ${esc((c.required_hashtags || []).join(" ") || "none")}\n${c.required_disclosure ? "Disclosure: " + esc(c.required_disclosure) + "\n" : ""}${c.rules_note ? "\n" + esc(c.rules_note) : ""}` : "Pick a campaign to see its rules here.";
+    const acc = c && c.assigned_account_id ? S.accounts.find(a => a.id === c.assigned_account_id) : null;
+    $("#rules").innerHTML = c ? `<b style="color:var(--tx)">${esc(c.name)}</b>${c.streamer ? " · " + esc(c.streamer) : ""}\n${acc ? "👤 Assigned Account: " + esc(acc.name) + "\n" : ""}Length: ${c.min_clip_length || 15}–${c.max_clip_length || 60}s\nPlatforms: ${esc((c.allowed_upload_platforms || []).join(", ") || "any")}\nHashtags: ${esc((c.required_hashtags || []).join(" ") || "none")}\n${c.required_disclosure ? "Disclosure: " + esc(c.required_disclosure) + "\n" : ""}${c.rules_note ? "\n" + esc(c.rules_note) : ""}` : "Pick a campaign to see its rules here.";
   };
   $("#camp").onchange = showRules; showRules();
   $$("#count button, #sens button, #ltype button").forEach(b => b.onclick = () => { $$("button", b.parentNode).forEach(x => x.classList.remove("on")); b.classList.add("on"); d[{ count: "count", sens: "sens", ltype: "ltype" }[b.parentNode.id]] = b.dataset.v; });
@@ -357,7 +360,12 @@ function drawClips(job) {
     $("[data-rr]", el).onclick = () => rerender(job, i, el);
     $$("[data-st]", el).forEach(b => b.onclick = () => setStatus(job, i, c.status === b.dataset.st ? "PENDING" : b.dataset.st));
     const pubBtn = $("[data-pub]", el);
-    if (pubBtn) pubBtn.onclick = () => { PUB.picks.add(c.path); location.hash = "#schedule"; };
+    if (pubBtn) pubBtn.onclick = () => {
+      PUB.picks.add(c.path);
+      const camp = (S.campaigns || []).find(x => x.id === job.campaign_id);
+      if (camp && camp.assigned_account_id) PUB.acct = camp.assigned_account_id;
+      location.hash = "#schedule";
+    };
     $$("[data-tab]", el).forEach(b => b.onclick = () => { tab = b.dataset.tab; $$("[data-tab]", el).forEach(x => x.classList.toggle("ghost", x !== b)); $("[data-cap]", el).textContent = capText(c.platforms || {}, tab); });
     $("[data-copy]", el).onclick = async () => { await navigator.clipboard.writeText($("[data-cap]", el).textContent); toast("Caption copied"); };
     el.onmousedown = e => { if (!e.target.closest("button,input,video")) { S.focus = +el.dataset.n; $$(".clip").forEach(x => x.classList.toggle("focus", x === el)); } };
@@ -703,14 +711,22 @@ async function renderLive() {
 
 /* ---------------- CAMPAIGNS ---------------- */
 async function renderCampaigns() {
-  S.campaigns = await api("/api/campaigns").catch(() => []);
+  const [camps, accs] = await Promise.all([
+    api("/api/campaigns").catch(() => []),
+    api("/api/social/accounts").catch(() => [])
+  ]);
+  S.campaigns = camps;
+  S.accounts = accs;
   const cur = S.campaigns.find(c => c.id === S.arg) || (S.arg === "new" ? {} : S.campaigns[0] || {});
   const list = v => (v || []).join(", ");
   const ov = cur.overlay || {};
   main.innerHTML = `
   <div class="head"><div><h1>Campaigns</h1><p>Each campaign's rules get applied to every clip automatically.</p></div><span class="sp"></span><a class="btn pri" href="#campaigns/new">＋ New campaign</a></div>
   <div class="grid2" style="grid-template-columns:280px 1fr">
-    <div class="camp-list">${S.campaigns.map(c => `<a href="#campaigns/${c.id}" class="${c.id === cur.id ? "on" : ""}"><b>${esc(c.name || c.id)}</b><small>${esc(c.streamer || "")} ${c.platform ? "· " + esc(c.platform) : ""}</small></a>`).join("") || '<div class="empty">No campaigns yet</div>'}</div>
+    <div class="camp-list">${S.campaigns.map(c => {
+      const a = S.accounts.find(x => x.id === c.assigned_account_id);
+      return `<a href="#campaigns/${c.id}" class="${c.id === cur.id ? "on" : ""}"><b>${esc(c.name || c.id)}</b><small>${esc(c.streamer || "")} ${c.platform ? "· " + esc(c.platform) : ""}${a ? " · 👤 " + esc(a.name) : ""}</small></a>`;
+    }).join("") || '<div class="empty">No campaigns yet</div>'}</div>
     <div class="card"><div class="formgrid">
       <div class="col"><span class="lbl">Campaign name</span><input type="text" id="c-name" value="${esc(cur.name)}" placeholder="e.g. Streamer GTA 6 clipping"></div>
       <div class="col"><span class="lbl">Streamer</span><input type="text" id="c-streamer" value="${esc(cur.streamer)}"></div>
@@ -720,6 +736,12 @@ async function renderCampaigns() {
       <div class="col"><span class="lbl">Max length (s)</span><input type="number" id="c-max" value="${cur.max_clip_length ?? 60}"></div>
       <div class="col"><span class="lbl">Required hashtags</span><input type="text" id="c-tags" value="${esc(list(cur.required_hashtags))}" placeholder="#ad, #streamer"></div>
       <div class="col"><span class="lbl">Allowed platforms</span><input type="text" id="c-plats" value="${esc(list(cur.allowed_upload_platforms))}" placeholder="tiktok, youtube, instagram, x"></div>
+      <div class="col" style="grid-column:1/-1"><span class="lbl">Assigned Creator Account</span>
+        <select id="c-acct">
+          <option value="">-- No Account Linked --</option>
+          ${S.accounts.map(a => `<option value="${esc(a.id)}" ${cur.assigned_account_id === a.id ? "selected" : ""}>👤 ${esc(a.name)}</option>`).join("")}
+        </select>
+      </div>
       <div class="col" style="grid-column:1/-1"><span class="lbl">Required disclosure</span><input type="text" id="c-disc" value="${esc(cur.required_disclosure)}"></div>
       <div class="col" style="grid-column:1/-1"><span class="lbl">Rules from the campaign brief</span><textarea id="c-rules" style="font-family:inherit;min-height:90px">${esc(cur.rules_note)}</textarea></div>
       <div class="col" style="grid-column:1/-1"><span class="lbl">Campaign overlay image (PNG path, optional)</span><input type="text" id="c-ov" value="${esc(ov.image_path)}" placeholder="C:\\path\\to\\campaign_sticker.png"></div>
@@ -732,11 +754,357 @@ async function renderCampaigns() {
     if (!$("#c-name").value.trim()) return toast("Give it a name", true);
     const body = { id: cur.id || null, name: $("#c-name").value.trim(), streamer: $("#c-streamer").value.trim(), platform: $("#c-platform").value, preset: $("#c-preset").value,
       min_clip_length: +$("#c-min").value || 15, max_clip_length: +$("#c-max").value || 60, required_hashtags: csv("#c-tags"), allowed_upload_platforms: csv("#c-plats"),
+      assigned_account_id: $("#c-acct").value || null,
       required_disclosure: $("#c-disc").value.trim(), rules_note: $("#c-rules").value, risk_words: cur.risk_words,
       overlay: $("#c-ov").value.trim() ? { image_path: $("#c-ov").value.trim(), x: $("#c-ox").value, y: $("#c-oy").value, width: +$("#c-ow").value || -1 } : null };
     try { const r = await api("/api/campaigns", { method: "POST", body }); toast("Saved"); location.hash = "#campaigns/" + r.id; renderCampaigns(); } catch (e) { toast(e.message, true); }
   };
   if ($("#c-del")) $("#c-del").onclick = async () => { if (!confirm("Delete this campaign?")) return; await api("/api/campaigns/" + cur.id, { method: "DELETE" }); location.hash = "#campaigns"; };
+}
+
+/* ---------------- BOUNTIES ---------------- */
+const BOUNTIES = { filter: "all", adding: false, sig: "" };
+
+function renderAccountHandlesPreview(acc) {
+  if (!acc) return '<span class="small muted">No account selected</span>';
+  const pl = acc.platforms || {};
+  const activeHandles = PLATS.filter(([k]) => (pl[k] || {}).enabled && (pl[k] || {}).handle).map(([k, l, ic]) => {
+    return `<span class="plat-pill active" style="padding:2px 8px;font-size:11px" title="${l}: ${esc(pl[k].handle)}">${ic} ${esc(pl[k].handle)}</span>`;
+  });
+  if (!activeHandles.length) {
+    return `<div class="small muted" style="margin-top:2px"><span style="color:var(--warn)">No handles configured</span> · <a href="#schedule" style="color:var(--ac);text-decoration:underline">Configure @handles in Publish</a></div>`;
+  }
+  return `<div class="row small" style="gap:4px;flex-wrap:wrap;margin-top:4px">${activeHandles.join("")}</div>`;
+}
+
+async function renderBounties(force = true) {
+  const [bounties, accounts, camps] = await Promise.all([
+    api("/api/bounties").catch(() => []),
+    api("/api/social/accounts").catch(() => []),
+    api("/api/campaigns").catch(() => [])
+  ]);
+  S.bounties = bounties;
+  S.accounts = accounts;
+  S.campaigns = camps;
+
+  const bBounties = $("#b-bounties");
+  if (bBounties) bBounties.textContent = bounties.filter(b => b.status === "HOT").length ? "HOT" : "";
+
+  const f = BOUNTIES.filter;
+  let filtered = bounties;
+  if (f === "hot") filtered = bounties.filter(b => b.status === "HOT");
+  else if (f === "vyro") filtered = bounties.filter(b => b.source === "vyro");
+  else if (f === "whop") filtered = bounties.filter(b => b.source === "whop");
+  else if (f === "discord") filtered = bounties.filter(b => b.source === "discord");
+  else if (f === "cliptech") filtered = bounties.filter(b => b.source === "cliptech");
+  else if (f === "linked") filtered = bounties.filter(b => b.assigned_account_id);
+
+  const totalPool = bounties.reduce((acc, b) => {
+    const m = (b.pool_size || "").match(/\$([\d,]+)/);
+    return acc + (m ? parseInt(m[1].replace(/,/g, ""), 10) : 0);
+  }, 0);
+
+  main.innerHTML = `
+  <div class="head">
+    <div>
+      <h1>Bounties & Creator Rewards</h1>
+      <p>Browse active clipping reward pools from Vyro, Whop, Kick, and Streamer Discords. Link each bounty to your creator account handles so clips post under the right identity.</p>
+    </div>
+    <div class="row" style="gap:8px">
+      <button class="btn ${BOUNTIES.adding ? "" : "pri"}" id="bounty-toggle-add">${BOUNTIES.adding ? "✕ Close Form" : "＋ Add Custom Bounty"}</button>
+      <a class="btn" href="#schedule">👤 Manage Accounts (${accounts.length})</a>
+    </div>
+  </div>
+
+  ${!accounts.length ? `
+  <div class="card" style="border-color:var(--warn);background:rgba(255,180,0,0.06);margin-bottom:16px">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <div>
+        <b style="color:var(--warn)">No Creator Accounts Configured Yet</b>
+        <div class="small muted" style="margin-top:2px">Set up your creator accounts (YouTube channel, TikTok handle, IG reels, FB page) in Publish & Schedule so you can link them to these bounties.</div>
+      </div>
+      <a class="btn sm pri" href="#schedule">＋ Add Your First Account</a>
+    </div>
+  </div>` : `
+  <div class="row small muted" style="margin-bottom:14px;gap:12px;align-items:center;flex-wrap:wrap;background:var(--s1);padding:10px 14px;border-radius:var(--r);border:1px solid var(--line)">
+    <span><b>${bounties.length}</b> Opportunities Available</span>
+    <span>•</span>
+    <span><b>$${totalPool.toLocaleString()}+</b> in Tracked Reward Pools</span>
+    <span>•</span>
+    <span>👤 <b>${accounts.length}</b> Account Profile${accounts.length === 1 ? "" : "s"} Ready</span>
+    <span style="flex:1"></span>
+    <span class="small">Link bounties below to auto-route clips into that account's schedule.</span>
+  </div>`}
+
+  ${BOUNTIES.adding ? bountyAddForm(accounts) : ""}
+
+  <div class="row" style="margin-bottom:18px;gap:8px;flex-wrap:wrap">
+    <div class="seg" id="bounty-filters">
+      ${[
+        ["all", "All Bounties (" + bounties.length + ")"],
+        ["hot", "🔥 Hot Pools (" + bounties.filter(b => b.status === "HOT").length + ")"],
+        ["vyro", "Vyro ($2.50–$3.00 CPM)"],
+        ["discord", "Streamer Discords (Kai/Adin/Speed)"],
+        ["whop", "Whop Rewards"],
+        ["cliptech", "Clip.tech"],
+        ["linked", "👤 My Linked Bounties (" + bounties.filter(b => b.assigned_account_id).length + ")"]
+      ].map(([k, label]) => `<button data-bf="${k}" class="${BOUNTIES.filter === k ? "on" : ""}">${label}</button>`).join("")}
+    </div>
+  </div>
+
+  <div class="bounties-grid">
+    ${filtered.length ? filtered.map(b => bountyCardHtml(b, accounts)).join("") : `<div class="empty" style="grid-column:1/-1;padding:32px"><b>No bounties in this category</b>Try switching the filter above or click "Add Custom Bounty".</div>`}
+  </div>`;
+
+  bindBounties(accounts);
+}
+
+function bountyAddForm(accounts) {
+  return `<div class="card" style="margin-bottom:20px;border-color:var(--ac)">
+    <div class="lbl" style="margin-bottom:12px">Add Custom Streamer Bounty / Discord Announcement</div>
+    <div class="formgrid">
+      <div class="col"><span class="lbl">Bounty Title</span><input type="text" id="b-title" placeholder="e.g. Kai Cenat Monthly Clipper Rewards"></div>
+      <div class="col"><span class="lbl">Streamer or Organization</span><input type="text" id="b-streamer" placeholder="e.g. Kai Cenat, AMP, Adin Ross"></div>
+      <div class="col"><span class="lbl">Source Type</span>
+        <select id="b-source">
+          <option value="discord">Streamer Discord Pool</option>
+          <option value="vyro">Vyro Creator Campaign</option>
+          <option value="whop">Whop Content Rewards</option>
+          <option value="cliptech">Clip.tech Bounty</option>
+          <option value="kick">Kick Creator Pool</option>
+          <option value="custom">Other / Custom</option>
+        </select>
+      </div>
+      <div class="col"><span class="lbl">Source Display Name</span><input type="text" id="b-sourcename" placeholder="e.g. Adin Discord, Kick Bounty"></div>
+      <div class="col"><span class="lbl">Payout Rate</span><input type="text" id="b-payout" placeholder="e.g. $3.00 CPM or $15,000 Leaderboard"></div>
+      <div class="col"><span class="lbl">Total Pool Size</span><input type="text" id="b-pool" placeholder="e.g. $10,000 Monthly Pool"></div>
+      <div class="col"><span class="lbl">Budget Remaining</span><input type="text" id="b-budget" placeholder="e.g. Active this month / $18k left"></div>
+      <div class="col"><span class="lbl">Status</span>
+        <select id="b-status">
+          <option value="HOT">🔥 HOT (Active / High Reward)</option>
+          <option value="ACTIVE">● ACTIVE (Open)</option>
+        </select>
+      </div>
+      <div class="col"><span class="lbl">Source Stream Platform</span>
+        <select id="b-platform">
+          <option value="twitch">Twitch</option>
+          <option value="kick">Kick</option>
+          <option value="youtube">YouTube</option>
+        </select>
+      </div>
+      <div class="col"><span class="lbl">Allowed Upload Platforms (comma-separated)</span><input type="text" id="b-plats" value="tiktok, youtube, instagram" placeholder="tiktok, youtube, instagram, facebook"></div>
+      <div class="col" style="grid-column:1/-1"><span class="lbl">Required Hashtags (comma-separated)</span><input type="text" id="b-tags" placeholder="#kaicenat, #amp, #twitchclips"></div>
+      <div class="col" style="grid-column:1/-1"><span class="lbl">Bounty / Discord Link</span><input type="text" id="b-url" placeholder="https://discord.gg/... or https://vyro.com/..."></div>
+      <div class="col"><span class="lbl">Min Clip Length (s)</span><input type="number" id="b-min" value="15"></div>
+      <div class="col"><span class="lbl">Max Clip Length (s)</span><input type="number" id="b-max" value="60"></div>
+      <div class="col" style="grid-column:1/-1"><span class="lbl">Link to Creator Account</span>
+        <select id="b-acct">
+          <option value="">-- No Account Linked Yet --</option>
+          ${accounts.map(a => `<option value="${esc(a.id)}">👤 ${esc(a.name)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="col" style="grid-column:1/-1"><span class="lbl">Rules / Submission Notes</span>
+        <textarea id="b-rules" style="font-family:inherit;min-height:70px" placeholder="Submission instructions, view verification rules, bot commands..."></textarea>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px;gap:8px">
+      <button class="btn pri" id="bounty-save">Save Bounty</button>
+      <button class="btn" id="bounty-cancel">Cancel</button>
+    </div>
+  </div>`;
+}
+
+function bountyCardHtml(b, accounts) {
+  const linkedAcc = accounts.find(a => a.id === b.assigned_account_id);
+  const isCustom = b.source === "custom" || b.id.startsWith("bounty_");
+
+  return `<div class="bounty-card ${b.status === "HOT" ? "hot" : ""} ${b.assigned_account_id ? "linked" : ""}">
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        <span class="chip ${b.source === "discord" ? "acc" : "ok"}">${esc(b.source_name || b.source)}</span>
+        ${b.status === "HOT" ? '<span class="chip warn">🔥 HOT</span>' : '<span class="chip ok">● ACTIVE</span>'}
+        ${b.is_imported ? '<span class="chip ac" title="Imported as local campaign preset">⚡ Campaign Ready</span>' : ""}
+      </div>
+      ${isCustom ? `<button class="btn sm ghost danger" data-del-bounty="${esc(b.id)}" title="Delete bounty">✕</button>` : ""}
+    </div>
+
+    <div>
+      <div class="small muted" style="margin-bottom:2px">${esc(b.streamer || "")} · ${esc(b.platform || "stream")}</div>
+      <b style="font-size:16px;color:var(--tx);line-height:1.3">${esc(b.title)}</b>
+    </div>
+
+    <div>
+      <div class="bounty-payout">${esc(b.payout_rate)}</div>
+      <div class="bounty-pool">${esc(b.pool_size || "")}${b.budget_remaining ? " · " + esc(b.budget_remaining) : ""}</div>
+    </div>
+
+    <div class="col" style="gap:6px">
+      <div class="row small" style="gap:4px;flex-wrap:wrap">
+        ${(b.allowed_platforms || []).map(p => `<span class="plat-pill active" style="padding:2px 8px;font-size:11px">${p === "youtube" ? "▶ Shorts" : p === "tiktok" ? "♪ TikTok" : p === "instagram" ? "◎ Reels" : p === "facebook" ? "f Reels" : p}</span>`).join("")}
+      </div>
+      <div class="row small" style="gap:4px;flex-wrap:wrap">
+        ${(b.required_hashtags || []).map(h => `<span class="chip" style="font-size:11px">${esc(h)}</span>`).join("")}
+      </div>
+    </div>
+
+    <div class="small muted" style="background:var(--s2);padding:8px 10px;border-radius:6px;max-height:64px;overflow-y:auto;white-space:pre-wrap;line-height:1.4">${esc(b.rules_note || "Follow streamer rules and submit posted links.")}</div>
+
+    <div class="bounty-acct-box">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <span class="lbl" style="margin:0">Assigned Creator Account</span>
+        ${linkedAcc ? `<span class="small ok" style="color:var(--ac);font-weight:700">✓ Linked to ${esc(linkedAcc.name)}</span>` : `<span class="small muted">Not linked</span>`}
+      </div>
+      <div class="row" style="gap:6px">
+        <select class="bounty-acct-sel" data-bid="${esc(b.id)}" style="flex:1">
+          <option value="">-- No Account Linked --</option>
+          ${accounts.map(a => `<option value="${esc(a.id)}" ${b.assigned_account_id === a.id ? "selected" : ""}>👤 ${esc(a.name)}</option>`).join("")}
+        </select>
+        ${b.assigned_account_id ? `<button class="btn sm ghost" data-unlink="${esc(b.id)}" title="Unlink account">✕</button>` : ""}
+      </div>
+      ${renderAccountHandlesPreview(linkedAcc)}
+    </div>
+
+    <div class="row" style="justify-content:space-between;margin-top:auto;padding-top:12px;border-top:1px solid var(--line);gap:8px">
+      <a class="btn sm ghost" href="${esc(b.url || "#")}" target="_blank" rel="noopener">Open Bounty ↗</a>
+      <div class="row" style="gap:6px">
+        <button class="btn sm ${b.is_imported ? "ghost" : ""}" data-import-bounty="${esc(b.id)}">${b.is_imported ? "Re-import" : "Import Campaign"}</button>
+        <button class="btn sm pri" data-clip-bounty="${esc(b.id)}">Start Clipping ✂</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindBounties(accounts) {
+  const tog = $("#bounty-toggle-add");
+  if (tog) tog.onclick = () => { BOUNTIES.adding = !BOUNTIES.adding; renderBounties(true); };
+  const can = $("#bounty-cancel");
+  if (can) can.onclick = () => { BOUNTIES.adding = false; renderBounties(true); };
+
+  $$("#bounty-filters button").forEach(b => {
+    b.onclick = () => {
+      BOUNTIES.filter = b.dataset.bf;
+      renderBounties(true);
+    };
+  });
+
+  const sv = $("#bounty-save");
+  if (sv) {
+    sv.onclick = async () => {
+      const title = $("#b-title").value.trim();
+      if (!title) return toast("Give the bounty a title", true);
+      const csv = id => $(id).value.split(",").map(s => s.trim()).filter(Boolean);
+      const body = {
+        title,
+        streamer: $("#b-streamer").value.trim(),
+        source: $("#b-source").value,
+        source_name: $("#b-sourcename").value.trim() || $("#b-source").value,
+        payout_rate: $("#b-payout").value.trim() || "$3.00 CPM",
+        pool_size: $("#b-pool").value.trim(),
+        budget_remaining: $("#b-budget").value.trim(),
+        status: $("#b-status").value,
+        platform: $("#b-platform").value,
+        allowed_platforms: csv("#b-plats").map(s => s.toLowerCase()),
+        required_hashtags: csv("#b-tags"),
+        min_clip_length: +$("#b-min").value || 15,
+        max_clip_length: +$("#b-max").value || 60,
+        url: $("#b-url").value.trim(),
+        rules_note: $("#b-rules").value.trim(),
+        assigned_account_id: $("#b-acct").value || null,
+      };
+      try {
+        await api("/api/bounties", { method: "POST", body });
+        BOUNTIES.adding = false;
+        toast("Custom bounty added!");
+        renderBounties(true);
+      } catch (e) {
+        toast(e.message || "Failed to save bounty", true);
+      }
+    };
+  }
+
+  $$(".bounty-acct-sel").forEach(sel => {
+    sel.onchange = async () => {
+      const bid = sel.dataset.bid;
+      const acctId = sel.value || null;
+      try {
+        await api(`/api/bounties/${bid}/link-account`, { method: "POST", body: { account_id: acctId } });
+        const b = (S.bounties || []).find(x => x.id === bid);
+        if (b) b.assigned_account_id = acctId;
+        const acc = accounts.find(a => a.id === acctId);
+        toast(acctId ? `Linked to ${acc ? acc.name : acctId}` : "Account unlinked");
+        renderBounties(true);
+      } catch (e) {
+        toast(e.message || "Failed to link account", true);
+      }
+    };
+  });
+
+  $$("[data-unlink]").forEach(btn => {
+    btn.onclick = async () => {
+      const bid = btn.dataset.unlink;
+      try {
+        await api(`/api/bounties/${bid}/link-account`, { method: "POST", body: { account_id: null } });
+        toast("Account unlinked");
+        renderBounties(true);
+      } catch (e) {
+        toast(e.message || "Failed to unlink account", true);
+      }
+    };
+  });
+
+  $$("[data-import-bounty]").forEach(btn => {
+    btn.onclick = async () => {
+      const bid = btn.dataset.importBounty;
+      const b = (S.bounties || []).find(x => x.id === bid);
+      btn.disabled = true;
+      try {
+        await api(`/api/bounties/${bid}/import`, { method: "POST", body: { account_id: b ? b.assigned_account_id : null } });
+        toast(`Imported "${b ? b.title : bid}" as campaign preset!`);
+        renderBounties(true);
+      } catch (e) {
+        toast(e.message || "Failed to import", true);
+        btn.disabled = false;
+      }
+    };
+  });
+
+  $$("[data-clip-bounty]").forEach(btn => {
+    btn.onclick = async () => {
+      const bid = btn.dataset.clipBounty;
+      const b = (S.bounties || []).find(x => x.id === bid);
+      btn.disabled = true;
+      btn.textContent = "Setting up…";
+      try {
+        if (!b.is_imported) {
+          await api(`/api/bounties/${bid}/import`, { method: "POST", body: { account_id: b.assigned_account_id || null } });
+        }
+        S.draft.camp = bid;
+        if (b.assigned_account_id) {
+          PUB.acct = b.assigned_account_id;
+        }
+        toast(`Campaign "${b.title}" selected! Ready to clip.`);
+        location.hash = "#new";
+      } catch (e) {
+        toast(e.message || "Failed to start clipping", true);
+        btn.disabled = false;
+        btn.textContent = "Start Clipping ✂";
+      }
+    };
+  });
+
+  $$("[data-del-bounty]").forEach(btn => {
+    btn.onclick = async () => {
+      const bid = btn.dataset.delBounty;
+      if (!confirm("Delete this custom bounty?")) return;
+      try {
+        await api(`/api/bounties/${bid}`, { method: "DELETE" });
+        toast("Bounty removed");
+        renderBounties(true);
+      } catch (e) {
+        toast(e.message || "Failed to delete", true);
+      }
+    };
+  });
 }
 
 /* ---------------- SETTINGS ---------------- */
