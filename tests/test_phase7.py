@@ -67,16 +67,24 @@ class TestPhase7(unittest.TestCase):
                 # Override buffer file to our test media
                 clipper.buffer_file = buffer_file
 
-                # 1. First check: should detect spike and render clip
-                clips = clipper.check_and_clip()
-                self.assertGreaterEqual(len(clips), 1)
-                clip = clips[0]
-                self.assertTrue(os.path.isfile(clip["path"]))
-                self.assertGreater(os.path.getsize(clip["path"]), 1024)
+                # 1. First check: should detect spike and render clip (bypass LLM judge in synthetic unit test)
+                from unittest.mock import patch
+                with patch("clipper.live.load_config", return_value={"llm": {"enabled": False}}):
+                    clips = clipper.check_and_clip()
+                    self.assertGreaterEqual(len(clips), 1)
+                    clip = clips[0]
+                    self.assertTrue(os.path.isfile(clip["path"]))
+                    self.assertGreater(os.path.getsize(clip["path"]), 1024)
 
-                # 2. Second check: should deduplicate against history file and return empty
-                clips_second = clipper.check_and_clip()
-                self.assertEqual(len(clips_second), 0)
+                    # Also verify telemetry tracking is functional
+                    telem = clipper.get_telemetry()
+                    self.assertIn("status", telem)
+                    self.assertIn("progress_pct", telem)
+                    self.assertGreater(len(telem["recent_events"]), 0)
+
+                    # 2. Second check: should deduplicate against history file and return empty
+                    clips_second = clipper.check_and_clip()
+                    self.assertEqual(len(clips_second), 0)
         finally:
             if os.path.isdir(test_history_dir):
                 shutil.rmtree(test_history_dir, ignore_errors=True)

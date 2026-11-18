@@ -706,14 +706,93 @@ async function renderLive(full = true) {
   const bLive = $("#b-live");
   if (bLive) bLive.textContent = activeCount ? `${activeCount} LIVE` : "";
 
-  const renderSessionsHtml = () => (st.sessions || []).map(s => `
-    <div class="card row" style="margin-bottom:10px">
-      ${s.running ? '<span class="chip hot">● LIVE</span>' : '<span class="chip">stopped</span>'}
-      <b class="ttl">${esc(s.url)}</b>
-      <span class="muted small">since ${s.started}</span>
-      <span style="flex:1"></span>
-      <button class="btn sm danger" data-stop="${s.id}">Stop</button>
-    </div>`).join("");
+  const fmtDuration = (sec) => {
+    if (!sec || isNaN(sec) || sec < 0) return "0s";
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  };
+
+  const getStatusChip = (status, running) => {
+    if (!running) return '<span class="chip">stopped</span>';
+    switch (status) {
+      case 'judging': return '<span class="chip hot">🧠 AI JUDGE (Qwen 14B)</span>';
+      case 'transcribing': return '<span class="chip warn">🎙️ TRANSCRIBING</span>';
+      case 'rendering': return '<span class="chip ac">🎬 RENDERING 9:16</span>';
+      case 'cutting': return '<span class="chip warn">✂️ EXTRACTING</span>';
+      case 'analyzing': return '<span class="chip blue">⚡ ANALYZING HYPE</span>';
+      case 'buffering': return '<span class="chip warn">⏳ BUFFERING</span>';
+      case 'catching_up': return '<span class="chip blue">⏩ CATCHING UP</span>';
+      default: return '<span class="chip ok">● LIVE LISTENING</span>';
+    }
+  };
+
+  const getBadgeName = (type) => {
+    switch (type) {
+      case 'spike': return '⚡ SPIKE';
+      case 'transcribing': return '🎙️ WHISPER';
+      case 'judge_reject': return '❌ REJECTED';
+      case 'judge_approve': return '✅ APPROVED';
+      case 'rendered': return '🎬 EXPORTED';
+      default: return 'ℹ️ INFO';
+    }
+  };
+
+  const renderSessionsHtml = () => (st.sessions || []).map(s => {
+    const t = s.telemetry || {};
+    const bufSec = t.buffer_seconds || 0;
+    const anzSec = t.analyzed_seconds || 0;
+    const bufMb = t.buffer_mb || 0;
+    const pct = t.progress_pct != null ? t.progress_pct : (s.running ? 100 : 0);
+    const status = t.status || (s.running ? 'idle' : 'stopped');
+    const activity = t.activity || (s.running ? 'Listening to stream...' : 'Session stopped');
+    const events = t.recent_events || [];
+
+    return `
+    <div class="live-session-card ${s.running ? 'active' : ''}">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div class="row" style="gap:8px;align-items:center">
+          ${getStatusChip(status, s.running)}
+          <b class="ttl" style="max-width:480px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.url)}</b>
+          <span class="muted small">since ${esc(s.started)}</span>
+        </div>
+        <div class="row" style="gap:8px">
+          <button class="btn sm danger" data-stop="${s.id}">Stop Monitor ⏹</button>
+        </div>
+      </div>
+
+      <!-- Live Buffer & Analysis Progress Bar -->
+      <div class="col" style="gap:6px">
+        <div class="live-prog-track" title="Buffer Analysis Progress: ${pct}%">
+          <div class="live-prog-bar ${s.running && status !== 'idle' ? 'busy' : ''}" style="width: ${Math.max(2, pct)}%"></div>
+        </div>
+        <div class="row" style="justify-content:space-between;font-size:12px;color:var(--mu);margin-top:2px">
+          <span><b style="color:var(--tx)">${pct}% analyzed</b> (${fmtDuration(anzSec)} of ${fmtDuration(bufSec)} buffer · ${bufMb} MB)</span>
+          <span style="color:var(--ac);font-weight:600">${esc(activity)}</span>
+        </div>
+      </div>
+
+      <!-- Live Activity & AI Judge Decision Feed -->
+      <div class="col" style="gap:4px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <span class="lbl" style="margin:0">Live Engine & AI Judge Activity (${events.length} events)</span>
+          <span class="muted small">${events.length ? 'Real-time decision trace' : 'Waiting for first event...'}</span>
+        </div>
+        <div class="live-events-feed">
+          ${events.length ? events.map(ev => `
+            <div class="live-event-row">
+              <span class="live-ev-time">${esc(ev.time)}</span>
+              <span class="live-ev-badge ${esc(ev.type)}">${getBadgeName(ev.type)}</span>
+              <div class="live-ev-msg">
+                <span>${esc(ev.text)}</span>
+                ${ev.reason ? `<div class="live-ev-reason">💡 AI Judge Note: ${esc(ev.reason)}</div>` : ''}
+              </div>
+            </div>
+          `).join('') : '<div class="muted small" style="padding:6px 0;text-align:center">Actively capturing stream buffer from start — audio scanning runs continuously...</div>'}
+        </div>
+      </div>
+    </div>`;
+  }).join("");
 
   const renderClipsHtml = () => st.clips.length ? st.clips.map(c => `
     <div class="clip">

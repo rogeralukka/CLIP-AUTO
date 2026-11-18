@@ -372,8 +372,21 @@ class LiveIn(BaseModel):
 
 @app.get("/api/live")
 def live_status():
-    sessions = [{"id": k, "url": v["url"], "started": v["started"],
-                 "running": v["thread"].is_alive()} for k, v in _live_sessions.items()]
+    sessions = []
+    for k, v in _live_sessions.items():
+        sess_info = {
+            "id": k,
+            "url": v["url"],
+            "started": v["started"],
+            "running": v["thread"].is_alive(),
+        }
+        clipper_inst = v.get("clipper")
+        if clipper_inst and hasattr(clipper_inst, "get_telemetry"):
+            try:
+                sess_info["telemetry"] = clipper_inst.get_telemetry()
+            except Exception as e:
+                sess_info["telemetry"] = {"status": "error", "activity": str(e), "recent_events": []}
+        sessions.append(sess_info)
     clips = []
     for meta in sorted(glob.glob(os.path.join("clips", "live", "*", "*_metadata.json")), reverse=True)[:60]:
         try:

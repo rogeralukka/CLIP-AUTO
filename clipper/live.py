@@ -159,6 +159,55 @@ class LiveStreamClipper:
         self.clips_done: List[Dict[str, Any]] = []
         self._checks = 0
 
+        # Telemetry & UI status tracking
+        self.status: str = "starting"
+        self.activity: str = "Initializing stream capture..."
+        self.buffer_seconds: float = 0.0
+        self.buffer_mb: float = 0.0
+        self.recent_events: List[Dict[str, Any]] = []
+        self._telemetry_lock = threading.Lock()
+
+    def _set_state(self, status: str, activity: str) -> None:
+        with self._telemetry_lock:
+            self.status = status
+            self.activity = activity
+
+    def _record_event(
+        self,
+        event_type: str,
+        text: str,
+        score: Optional[float] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        with self._telemetry_lock:
+            self.recent_events.insert(
+                0,
+                {
+                    "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                    "type": event_type,
+                    "text": text,
+                    "score": score,
+                    "reason": reason,
+                },
+            )
+            if len(self.recent_events) > 30:
+                self.recent_events = self.recent_events[:30]
+
+    def get_telemetry(self) -> Dict[str, Any]:
+        with self._telemetry_lock:
+            pct = 0.0
+            if self.buffer_seconds > 0:
+                pct = min(100.0, round((self.last_analyzed_time / self.buffer_seconds) * 100, 1))
+            return {
+                "status": self.status,
+                "activity": self.activity,
+                "buffer_seconds": round(self.buffer_seconds, 1),
+                "analyzed_seconds": round(self.last_analyzed_time, 1),
+                "buffer_mb": self.buffer_mb,
+                "progress_pct": pct,
+                "recent_events": list(self.recent_events),
+            }
+
     def start_capture_process(self) -> bool:
         """Start background stream capture from the start of the stream using streamlink or yt-dlp."""
         streamlink_bin = get_streamlink_path()
@@ -198,23 +247,37 @@ class LiveStreamClipper:
                 stderr=subprocess.DEVNULL,
             )
             self._t0 = time.time()
+            self._set_state("capturing", "Connected to live stream. Buffering stream audio from start...")
+            self._record_event("info", f"Started stream capture from start: {self.stream_url}")
             m = re.search(r"twitch\.tv/([A-Za-z0-9_]+)/?$", self.stream_url.strip())
             if m and m.group(1).lower() not in ("videos", "directory"):
                 self.chat = TwitchChatListener(m.group(1), self._t0)
                 self.chat.start()
             return True
         except Exception as e:
+            self._set_state("error", f"Capture process failed to start: {e}")
+            self._record_event("info", f"Capture error: {e}")
             logger.error(f"Failed to start live stream capture process: {e}")
             return False
 
     def check_and_clip(self) -> List[Dict[str, Any]]:
         """Inspect the buffer from the start forward, compute hype spikes, cut and render any new moments."""
         if not os.path.isfile(self.buffer_file):
+            self._set_state("buffering", "Waiting for live stream buffer to initialize on disk...")
             logger.debug("Buffer file not yet created.")
             return []
 
         curr_duration = get_media_duration_seconds(self.buffer_file)
+        self.buffer_seconds = curr_duration
+        if self.last_analyzed_time > curr_duration:
+            self.last_analyzed_time = 0.0
+        try:
+            self.buffer_mb = round(os.path.getsize(self.buffer_file) / (1024 * 1024), 1)
+        except OSError:
+            pass
+
         if curr_duration < 30.0:
+            self._set_state("buffering", f"Warming up buffer: {curr_duration:.1f}s captured (need >= 30s)...")
             logger.info(f"Live buffer warming up: {curr_duration:.1f}s captured (need >= 30s)...")
             return []
 
@@ -225,11 +288,14 @@ class LiveStreamClipper:
 
         available_dur = curr_duration - start_offset
         if available_dur < 25.0 and self.last_analyzed_time > 0.0:
+            self._set_state("idle", f"Analyzed to {int(self.last_analyzed_time)}s. Listening at live edge ({int(curr_duration)}s buffer)...")
             logger.debug("Not enough new buffer to analyze yet (need >= 25s).")
             return []
 
         chunk_len = min(float(self.analysis_window_seconds), available_dur)
         end_offset = start_offset + chunk_len
+
+        self._set_state("analyzing", f"Scanning loudness & hype curve ({int(start_offset)}s -> {int(end_offset)}s of {int(curr_duration)}s buffer)...")
 
         tail_wav = os.path.join(self.buffer_dir, "tail.wav")
         ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
@@ -277,10 +343,12 @@ class LiveStreamClipper:
         self.last_analyzed_time = end_offset
 
         if not new_moments:
+            self._set_state("idle", f"Analyzed to {int(end_offset)}s. Listening for next hype spike...")
             logger.info("No new hype moments detected in current buffer window.")
             return []
 
         logger.info(f"Found {len(new_moments)} NEW hype moment(s) in live stream!")
+        self._record_event("spike", f"⚡ Detected {len(new_moments)} hype moment(s) around {int(new_moments[0]['start'])}s")
         self._probe_cams(curr_duration)
         rendered_clips = []
         preset = load_preset(self.preset_name)
@@ -297,9 +365,11 @@ class LiveStreamClipper:
             final_path = os.path.join(self.output_dir, f"{clip_base}.mp4")
 
             # Cut rough clip
+            self._set_state("cutting", f"Extracting audio/video moment at {int(start_s)}s ({int(dur)}s)...")
             cut_rough_clip(self.buffer_file, start_s, end_s, rough_path, use_cpu=self.use_cpu)
 
             # Transcribe
+            self._set_state("transcribing", f"Transcribing candidate moment at {int(start_s)}s with Whisper...")
             words = transcribe_clip(rough_path, use_cpu=self.use_cpu, cache_dir=self.output_dir)
             transcript_text = " ".join(w[2] for w in words).strip()
 
@@ -316,6 +386,7 @@ class LiveStreamClipper:
                     model_name = llm_cfg.get("model", "qwen3:14b")
                     avail, _ = is_ollama_available(endpoint)
                     if avail:
+                        self._set_state("judging", f"AI Judge evaluating virality at {int(start_s)}s (Qwen 14B)...")
                         unload_whisper_model()
                         chat_sample = []
                         if self.chat is not None:
@@ -332,7 +403,10 @@ class LiveStreamClipper:
                             standalone = eval_res.get("standalone", True)
                             payoff = eval_res.get("payoff_inside", True)
                             if score < 5.5 or not standalone or not payoff:
-                                logger.info(f"AI Judge rejected hollow moment at t={start_s:.1f}s (score={score:.1f}/10, standalone={standalone}, payoff={payoff}, reason: {eval_res.get('reason')})")
+                                reason = eval_res.get('reason') or "Lacks clear punchline or standalone context"
+                                logger.info(f"AI Judge rejected hollow moment at t={start_s:.1f}s (score={score:.1f}/10, standalone={standalone}, payoff={payoff}, reason: {reason})")
+                                self._record_event("judge_reject", f"AI Judge rejected moment at {int(start_s)}s (Score {score:.1f}/10)", score=score, reason=reason)
+                                self._set_state("idle", f"Rejected hollow moment at {int(start_s)}s (Score {score:.1f}/10). Resuming monitoring...")
                                 try:
                                     if os.path.isfile(rough_path):
                                         os.remove(rough_path)
@@ -342,6 +416,7 @@ class LiveStreamClipper:
                             if eval_res.get("hook_title"):
                                 hook_title = eval_res["hook_title"]
                             m["score"] = score
+                            self._record_event("judge_approve", f"AI Judge approved viral moment at {int(start_s)}s (Score {score:.1f}/10: '{hook_title}')", score=score)
                             logger.info(f"AI Judge approved viral moment at t={start_s:.1f}s (score={score:.1f}/10, hook='{hook_title}')")
                 except Exception as e:
                     logger.warning(f"Live LLM Judge evaluation failed, falling back: {e}")
@@ -359,6 +434,7 @@ class LiveStreamClipper:
                      caption_y=caption_anchor_y(layout, facecam))
 
             # Render vertical 9:16
+            self._set_state("rendering", f"Rendering vertical 9:16 clip '{hook_title}' ({int(dur)}s)...")
             render_vertical_clip(
                 rough_path,
                 ass_path,
@@ -425,9 +501,11 @@ class LiveStreamClipper:
             from .signals import record_clipped_moment
             record_clipped_moment(self.live_vod_id, start_s, end_s, m.get("score", 0.0))
             logger.info(f"Exported live clip -> {final_path} (QC: {qc['status']})")
+            self._record_event("rendered", f"Exported vertical clip '{hook_title}' ({round(dur, 1)}s, QC: {qc['status']})", score=m.get("score"))
             rendered_clips.append(clip_meta)
             self.clips_done.append(clip_meta)
 
+        self._set_state("idle", f"Analyzed to {int(end_offset)}s. Listening for new moments at live edge...")
         self._second_look()
         return rendered_clips
 
@@ -494,10 +572,21 @@ class LiveStreamClipper:
             while self._running:
                 # If we have a backlog of buffer from earlier in the stream, sleep briefly
                 # so we catch up quickly to the live edge.
-                curr_duration = get_media_duration_seconds(self.buffer_file)
-                backlog = curr_duration - self.last_analyzed_time
-                if backlog > self.analysis_window_seconds * 1.2:
-                    time.sleep(2)
+                if os.path.isfile(self.buffer_file):
+                    curr_duration = get_media_duration_seconds(self.buffer_file)
+                    self.buffer_seconds = curr_duration
+                    if self.last_analyzed_time > curr_duration:
+                        self.last_analyzed_time = 0.0
+                    try:
+                        self.buffer_mb = round(os.path.getsize(self.buffer_file) / (1024 * 1024), 1)
+                    except OSError:
+                        pass
+                    backlog = curr_duration - self.last_analyzed_time
+                    if backlog > self.analysis_window_seconds * 1.2:
+                        self._set_state("catching_up", f"Catching up to live edge ({int(self.last_analyzed_time)}s analyzed of {int(curr_duration)}s buffer)...")
+                        time.sleep(2)
+                    else:
+                        time.sleep(self.check_interval_seconds)
                 else:
                     time.sleep(self.check_interval_seconds)
 
@@ -506,6 +595,7 @@ class LiveStreamClipper:
                 try:
                     self.check_and_clip()
                 except Exception as e:
+                    self._record_event("info", f"Check error: {e}")
                     logger.warning(f"Error during live clipping check: {e}")
 
                 if max_iterations is not None and iterations >= max_iterations:
@@ -519,6 +609,8 @@ class LiveStreamClipper:
     def stop(self):
         """Stop background capture and clean up."""
         self._running = False
+        self._set_state("stopped", "Capture stopped by user.")
+        self._record_event("info", "Live stream session stopped.")
         if self.chat is not None:
             self.chat.stop()
         if self._capture_proc and self._capture_proc.poll() is None:
