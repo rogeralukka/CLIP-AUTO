@@ -178,3 +178,31 @@ def test_clip_done_callback_errors_never_stop_rendering():
     assert got == [{"path": "a.mp4"}]
     _notify_clip_done(lambda c: 1 / 0, {"path": "b.mp4"})   # must not raise
     _notify_clip_done(None, {"path": "c.mp4"})
+
+
+def test_ollama_payload_turns_thinking_off_and_keeps_model_loaded(monkeypatch):
+    import json as _json
+    from clipper import judge
+    seen = {}
+
+    class R:
+        status = 200
+        def read(self): return _json.dumps({"response": "{}"}).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_open(req, timeout=0):
+        seen["body"] = _json.loads(req.data.decode())
+        return R()
+    monkeypatch.setattr(judge.urllib.request, "urlopen", fake_open)
+    assert judge.call_ollama_generate("hi", model="qwen3:14b") == "{}"
+    b = seen["body"]
+    assert b["think"] is False and b["format"] == "json" and b["keep_alive"] != 0
+    assert b["options"]["num_ctx"] >= 4096
+
+
+def test_ensure_ollama_never_raises_without_install(monkeypatch):
+    from clipper import judge
+    monkeypatch.setattr(judge, "is_ollama_available", lambda *a, **k: (False, []))
+    monkeypatch.setattr(judge, "find_ollama_exe", lambda: None)
+    assert judge.ensure_ollama_running("http://localhost:1", wait_seconds=0.1) is False

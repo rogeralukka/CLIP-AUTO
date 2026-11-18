@@ -504,6 +504,14 @@ async def upload_custom_clip(file: UploadFile = File(...)):
     }
 
 
+def _start_ollama_in_background():
+    """Studio opens -> Ollama is started too (hidden), so the AI judge can use its model."""
+    llm = load_config().get("llm", {})
+    if llm.get("autostart_ollama", True):
+        threading.Thread(target=ensure_ollama_running, args=(llm.get("endpoint", "http://localhost:11434"),),
+                         daemon=True, name="ollama-autostart").start()
+
+
 if __name__ == "__main__":
     ensure_worker_running()
     _start_ollama_in_background()
