@@ -321,10 +321,10 @@ class LiveStreamClipper:
             video_path=tail_wav,
             z_thresh=self.sensitivity,
             vod_id=None,
-            before=20,
-            after=20,
+            before=25,
+            after=35,
             window=5,
-            min_clip_length=float((self.campaign or {}).get("min_clip_length") or 15.0),
+            min_clip_length=float((self.campaign or {}).get("min_clip_length") or 30.0),
             max_clip_length=float((self.campaign or {}).get("max_clip_length") or 180.0),
         )
 
@@ -402,7 +402,9 @@ class LiveStreamClipper:
                             score = float(eval_res.get("score", 5.0))
                             standalone = eval_res.get("standalone", True)
                             payoff = eval_res.get("payoff_inside", True)
-                            if score < 5.5 or not standalone or not payoff:
+                            # Balanced viral filter: reject true hollow moments (< 4.5) or
+                            # moments below 5.5 that lack an internal payoff/punchline.
+                            if score < 4.5 or (score < 5.5 and not payoff):
                                 reason = eval_res.get('reason') or "Lacks clear punchline or standalone context"
                                 logger.info(f"AI Judge rejected hollow moment at t={start_s:.1f}s (score={score:.1f}/10, standalone={standalone}, payoff={payoff}, reason: {reason})")
                                 self._record_event("judge_reject", f"AI Judge rejected moment at {int(start_s)}s (Score {score:.1f}/10)", score=score, reason=reason)
