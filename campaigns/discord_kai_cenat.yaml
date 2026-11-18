@@ -2,7 +2,7 @@ name: Kai Cenat & AMP Monthly Clipper Rewards
 streamer: Kai Cenat
 platform: twitch
 min_clip_length: 15
-max_clip_length: 60
+max_clip_length: 180
 preset: classic_yellow
 overlay: null
 required_hashtags:

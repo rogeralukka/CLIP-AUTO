@@ -37,7 +37,7 @@ def load_campaign(yaml_path_or_name: str) -> Dict[str, Any]:
         "streamer": data.get("streamer", ""),
         "platform": data.get("platform", ""),
         "min_clip_length": data.get("min_clip_length", 15),
-        "max_clip_length": data.get("max_clip_length", 60),
+        "max_clip_length": data.get("max_clip_length", 180),
         "preset": data.get("preset", "classic_yellow"),
         "overlay": data.get("overlay", None),
         "required_hashtags": data.get("required_hashtags", []),

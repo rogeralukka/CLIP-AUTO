@@ -297,7 +297,7 @@ def find_moments(
     heatmap_data: Optional[Any] = None,
     vod_id: Optional[str] = None,
     min_clip_length: float = 15.0,
-    max_clip_length: float = 60.0,
+    max_clip_length: float = 180.0,
     progress_cb: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Phase 2: Composite Hype Curve with robust z-scores, smart boundaries, and deduplication."""

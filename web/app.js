@@ -125,7 +125,7 @@ async function renderNew() {
   const showRules = () => {
     const c = S.campaigns.find(x => x.id === $("#camp").value); d.camp = $("#camp").value;
     const acc = c && c.assigned_account_id ? S.accounts.find(a => a.id === c.assigned_account_id) : null;
-    $("#rules").innerHTML = c ? `<b style="color:var(--tx)">${esc(c.name)}</b>${c.streamer ? " · " + esc(c.streamer) : ""}\n${acc ? "👤 Assigned Account: " + esc(acc.name) + "\n" : ""}Length: ${c.min_clip_length || 15}–${c.max_clip_length || 60}s\nPlatforms: ${esc((c.allowed_upload_platforms || []).join(", ") || "any")}\nHashtags: ${esc((c.required_hashtags || []).join(" ") || "none")}\n${c.required_disclosure ? "Disclosure: " + esc(c.required_disclosure) + "\n" : ""}${c.rules_note ? "\n" + esc(c.rules_note) : ""}` : "Pick a campaign to see its rules here.";
+    $("#rules").innerHTML = c ? `<b style="color:var(--tx)">${esc(c.name)}</b>${c.streamer ? " · " + esc(c.streamer) : ""}\n${acc ? "👤 Assigned Account: " + esc(acc.name) + "\n" : ""}Length: ${c.min_clip_length || 15}–${c.max_clip_length || 180}s\nPlatforms: ${esc((c.allowed_upload_platforms || []).join(", ") || "any")}\nHashtags: ${esc((c.required_hashtags || []).join(" ") || "none")}\n${c.required_disclosure ? "Disclosure: " + esc(c.required_disclosure) + "\n" : ""}${c.rules_note ? "\n" + esc(c.rules_note) : ""}` : "Pick a campaign to see its rules here.";
   };
   $("#camp").onchange = showRules; showRules();
   $$("#count button, #sens button, #ltype button").forEach(b => b.onclick = () => { $$("button", b.parentNode).forEach(x => x.classList.remove("on")); b.classList.add("on"); d[{ count: "count", sens: "sens", ltype: "ltype" }[b.parentNode.id]] = b.dataset.v; });
@@ -819,7 +819,7 @@ async function renderCampaigns() {
       <div class="col"><span class="lbl">Platform</span><select id="c-platform">${["twitch", "youtube", "kick"].map(p => `<option ${cur.platform === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
       <div class="col"><span class="lbl">Caption style</span><select id="c-preset">${((S.sys || {}).presets || ["classic_yellow"]).map(p => `<option ${cur.preset === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
       <div class="col"><span class="lbl">Min length (s)</span><input type="number" id="c-min" value="${cur.min_clip_length ?? 15}"></div>
-      <div class="col"><span class="lbl">Max length (s)</span><input type="number" id="c-max" value="${cur.max_clip_length ?? 60}"></div>
+      <div class="col"><span class="lbl">Max length (s)</span><input type="number" id="c-max" value="${cur.max_clip_length ?? 180}"></div>
       <div class="col"><span class="lbl">Required hashtags</span><input type="text" id="c-tags" value="${esc(list(cur.required_hashtags))}" placeholder="#ad, #streamer"></div>
       <div class="col"><span class="lbl">Allowed platforms</span><input type="text" id="c-plats" value="${esc(list(cur.allowed_upload_platforms))}" placeholder="tiktok, youtube, instagram, x"></div>
       <div class="col" style="grid-column:1/-1"><span class="lbl">Assigned Creator Account</span>
@@ -839,7 +839,7 @@ async function renderCampaigns() {
   $("#c-save").onclick = async () => {
     if (!$("#c-name").value.trim()) return toast("Give it a name", true);
     const body = { id: cur.id || null, name: $("#c-name").value.trim(), streamer: $("#c-streamer").value.trim(), platform: $("#c-platform").value, preset: $("#c-preset").value,
-      min_clip_length: +$("#c-min").value || 15, max_clip_length: +$("#c-max").value || 60, required_hashtags: csv("#c-tags"), allowed_upload_platforms: csv("#c-plats"),
+      min_clip_length: +$("#c-min").value || 15, max_clip_length: +$("#c-max").value || 180, required_hashtags: csv("#c-tags"), allowed_upload_platforms: csv("#c-plats"),
       assigned_account_id: $("#c-acct").value || null,
       required_disclosure: $("#c-disc").value.trim(), rules_note: $("#c-rules").value, risk_words: cur.risk_words,
       overlay: $("#c-ov").value.trim() ? { image_path: $("#c-ov").value.trim(), x: $("#c-ox").value, y: $("#c-oy").value, width: +$("#c-ow").value || -1 } : null };
@@ -1092,7 +1092,7 @@ function bindBounties(accounts) {
         allowed_platforms: csv("#b-plats").map(s => s.toLowerCase()),
         required_hashtags: csv("#b-tags"),
         min_clip_length: +$("#b-min").value || 15,
-        max_clip_length: +$("#b-max").value || 60,
+        max_clip_length: +$("#b-max").value || 180,
         url: $("#b-url").value.trim(),
         rules_note: $("#b-rules").value.trim(),
         assigned_account_id: $("#b-acct").value || null,

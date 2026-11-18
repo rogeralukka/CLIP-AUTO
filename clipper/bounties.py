@@ -276,7 +276,7 @@ def import_bounty_as_campaign(bounty_id: str, account_id: Optional[str] = None) 
         "streamer": bounty.get("streamer", ""),
         "platform": bounty.get("platform", "twitch"),
         "min_clip_length": bounty.get("min_clip_length", 15),
-        "max_clip_length": bounty.get("max_clip_length", 60),
+        "max_clip_length": bounty.get("max_clip_length", 180),
         "preset": "classic_yellow",
         "required_hashtags": bounty.get("required_hashtags", []),
         "required_disclosure": bounty.get("required_disclosure", ""),

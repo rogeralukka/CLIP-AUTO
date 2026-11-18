@@ -8,6 +8,7 @@ audio:
   section_padding_seconds: 3.0   # Padding around extracted video clips
 
 signals:
+  default_max_clip_length: 180.0 # Maximum clip length in seconds (up to 3 minutes for Shorts/TikTok)
   rolling_window_seconds: 600    # 10 minutes baseline window for robust z-score
   merge_gap_seconds: 15          # Merge nearby peak moments within this gap
   max_lead_seconds: 5.0          # Max lead time to snap to sentence boundary

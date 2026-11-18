@@ -223,9 +223,9 @@ def detect_pipeline_moments(
         full_transcript_data=full_transcript_data,
         heatmap_data=heatmap_file if os.path.isfile(heatmap_file) else None,
         vod_id=vod_id,
-        # Without a campaign, allow up to 90s so a story isn't chopped (Shorts allow 3 min)
+        # Without a campaign, allow up to 180s so a story isn't chopped (Shorts allow 3 min)
         min_clip_length=float(camp.get("min_clip_length") or 15.0),
-        max_clip_length=float(camp.get("max_clip_length") or cfg.get("signals", {}).get("default_max_clip_length", 90.0)),
+        max_clip_length=float(camp.get("max_clip_length") or cfg.get("signals", {}).get("default_max_clip_length", 180.0)),
         progress_cb=(lambda f: progress_callback(
             "detect", 31 + int(f * 3), f"Measuring loudness across the stream: {f * 100:.0f}%",
             {"stage_pct": 10 + f * 80})) if progress_callback else None,
@@ -235,7 +235,7 @@ def detect_pipeline_moments(
     # 5. Phase 3: Optional Local LLM Judge Re-ranking (also fixes story start/end)
     for m in moments:
         m["len_limits"] = (float(camp.get("min_clip_length") or 15.0),
-                           float(camp.get("max_clip_length") or cfg.get("signals", {}).get("default_max_clip_length", 90.0)))
+                           float(camp.get("max_clip_length") or cfg.get("signals", {}).get("default_max_clip_length", 180.0)))
     from .judge import rank_moments_with_llm
     moments = rank_moments_with_llm(
         moments=moments,

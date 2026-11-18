@@ -259,7 +259,7 @@ class LiveStreamClipper:
             after=20,
             window=5,
             min_clip_length=float((self.campaign or {}).get("min_clip_length") or 15.0),
-            max_clip_length=float((self.campaign or {}).get("max_clip_length") or 60.0),
+            max_clip_length=float((self.campaign or {}).get("max_clip_length") or 180.0),
         )
 
         # Back to buffer time; skip moments still unfolding at the very live edge
