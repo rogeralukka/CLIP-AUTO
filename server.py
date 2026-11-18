@@ -15,7 +15,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -30,6 +30,11 @@ from clipper.pipeline import rerender_clip  # noqa: E402
 from clipper.queue import (  # noqa: E402
     add_job, cancel_job, clear_finished_jobs, confirm_render_moments, delete_job,
     ensure_worker_running, load_jobs, mutate_job, pause_job, resume_job,
+)
+from clipper.social import (  # noqa: E402
+    calculate_next_slot, delete_account, delete_schedule_entry, get_account,
+    get_assigned_clip_account, get_daily_scheduled_count, load_accounts,
+    load_schedule_queue, schedule_clip_to_account, upsert_account,
 )
 
 app = FastAPI(title="CLIP AUTO Studio")
@@ -137,6 +142,22 @@ class NewJobs(BaseModel):
 def jobs():
     js = list(load_jobs().values())
     js.sort(key=lambda j: j.get("created_at") or "", reverse=True)
+    try:
+        queue = load_schedule_queue()
+        assigned_map = {}
+        for p in queue:
+            cp = p.get("clip_path")
+            if cp:
+                norm = os.path.normpath(os.path.abspath(cp)).lower()
+                assigned_map[norm] = p.get("account_name") or p.get("account_id")
+        for j in js:
+            for c in j.get("clips", []):
+                p = c.get("path")
+                if p:
+                    norm_p = os.path.normpath(os.path.abspath(p)).lower()
+                    c["assigned_account"] = assigned_map.get(norm_p)
+    except Exception:
+        pass
     return [j for j in js if not j.get("is_dev_test")]
 
 
@@ -353,6 +374,113 @@ def live_stop(sid: str):
     if s:
         s["clipper"].stop()
     return {"ok": True}
+
+
+# ----------------------------------------------------------------- social & scheduling
+class SocialAccountIn(BaseModel):
+    id: Optional[str] = None
+    name: str
+    max_clips_per_day: int = 4
+    schedule_slots: List[str] = ["11:00", "15:00", "19:00", "22:00"]
+    platforms: Dict[str, Any] = {}
+
+
+class SchedulePostIn(BaseModel):
+    account_id: str
+    clip_path: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    scheduled_time: Optional[str] = None
+
+
+@app.get("/api/social/accounts")
+def get_social_accounts():
+    accounts = load_accounts()
+    out = []
+    for aid, acc in accounts.items():
+        today_count = get_daily_scheduled_count(aid)
+        next_d, next_t = calculate_next_slot(aid)
+        item = dict(acc)
+        item["id"] = aid
+        item["today_count"] = today_count
+        item["next_slot"] = f"{next_d} {next_t}"
+        out.append(item)
+    return out
+
+
+@app.post("/api/social/accounts")
+def upsert_social_account(body: SocialAccountIn):
+    aid = body.id or f"acc_{int(time.time())}"
+    data = (body.model_dump if hasattr(body, "model_dump") else body.dict)(exclude={"id"})
+    saved_id = upsert_account(aid, data)
+    return {"id": saved_id, "account": get_account(saved_id)}
+
+
+@app.delete("/api/social/accounts/{aid}")
+def remove_social_account(aid: str):
+    ok = delete_account(aid)
+    return {"ok": ok}
+
+
+@app.get("/api/social/queue")
+def get_social_queue():
+    q = load_schedule_queue()
+    q.sort(key=lambda x: x.get("scheduled_time") or "", reverse=True)
+    return q
+
+
+@app.post("/api/social/schedule")
+def schedule_post(body: SchedulePostIn):
+    try:
+        entry = schedule_clip_to_account(
+            account_id=body.account_id,
+            clip_path=body.clip_path,
+            title=body.title,
+            description=body.description,
+            target_time_iso=body.scheduled_time,
+        )
+        return entry
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Scheduling error: {e}")
+
+
+@app.delete("/api/social/queue/{pid}")
+def cancel_scheduled_post(pid: str):
+    ok = delete_schedule_entry(pid)
+    return {"ok": ok}
+
+
+@app.post("/api/social/upload-file")
+async def upload_custom_clip(file: UploadFile = File(...)):
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in (".mp4", ".mov", ".mkv", ".webm"):
+        raise HTTPException(400, "Supported formats: .mp4, .mov, .mkv, .webm")
+
+    upload_dir = os.path.join(ROOT, "clips", "custom_uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+
+    safe_name = os.path.basename(file.filename).replace(" ", "_")
+    target_path = os.path.join(upload_dir, safe_name)
+    base, fext = os.path.splitext(safe_name)
+    counter = 1
+    while os.path.exists(target_path):
+        target_path = os.path.join(upload_dir, f"{base}_{counter}{fext}")
+        counter += 1
+
+    with open(target_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    rel_path = os.path.relpath(target_path, ROOT).replace("\\", "/")
+    return {
+        "ok": True,
+        "filename": os.path.basename(target_path),
+        "path": rel_path,
+        "full_path": target_path,
+    }
 
 
 if __name__ == "__main__":

@@ -1,0 +1,65 @@
+accounts:
+  acc_a:
+    id: acc_a
+    name: "Account A (Main Gaming)"
+    max_clips_per_day: 4
+    schedule_slots:
+      - "11:00"
+      - "15:00"
+      - "19:00"
+      - "22:00"
+    platforms:
+      youtube:
+        enabled: true
+        channel_name: "Channel A"
+      instagram:
+        enabled: true
+        account_name: "@account_a_reels"
+      tiktok:
+        enabled: true
+        account_name: "@account_a_tiktok"
+      facebook:
+        enabled: false
+        page_name: ""
+  acc_b:
+    id: acc_b
+    name: "Account B (Clips & Highlights)"
+    max_clips_per_day: 3
+    schedule_slots:
+      - "12:00"
+      - "16:00"
+      - "20:00"
+    platforms:
+      youtube:
+        enabled: true
+        channel_name: "Channel B"
+      instagram:
+        enabled: true
+        account_name: "@account_b_reels"
+      tiktok:
+        enabled: true
+        account_name: "@account_b_tiktok"
+      facebook:
+        enabled: false
+        page_name: ""
+  acc_c:
+    id: acc_c
+    name: "Account C (Shorts Vault)"
+    max_clips_per_day: 3
+    schedule_slots:
+      - "13:00"
+      - "17:00"
+      - "21:00"
+    platforms:
+      youtube:
+        enabled: true
+        channel_name: "Channel C"
+      instagram:
+        enabled: true
+        account_name: "@account_c_reels"
+      tiktok:
+        enabled: true
+        account_name: "@account_c_tiktok"
+      facebook:
+        enabled: false
+        page_name: ""

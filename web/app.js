@@ -18,18 +18,27 @@ const platformOf = l => /twitch\.tv/.test(l) ? "Twitch" : /youtu/.test(l) ? "You
 const SIG = { chat_rate: ["Chat speed", "#d7ff3a"], chat_keywords: ["Chat words", "#ff4f8b"], streamer_loudness: ["Loudness", "#5aa8ff"], speech_energy: ["Speech", "#ffb23a"], youtube_heatmap: ["Replays", "#b78cff"] };
 const STAGES = [["download", "Download"], ["transcribe", "Transcribe"], ["detect", "Find moments"], ["selection", "Review"], ["render", "Render"]];
 
-const S = { jobs: [], sys: null, campaigns: [], route: "new", arg: null, focus: 0, clipFilter: "all", draft: {} };
+const S = { jobs: [], sys: null, campaigns: [], accounts: [], scheduleQueue: [], activeAccount: null, route: "new", arg: null, focus: 0, clipFilter: "all", draft: {} };
 
 /* ---------------- polling ---------------- */
 async function refresh() {
   try {
-    S.jobs = await api("/api/jobs");
+    const [jobs, qPosts, accs] = await Promise.all([
+      api("/api/jobs"),
+      api("/api/social/queue").catch(() => []),
+      api("/api/social/accounts").catch(() => [])
+    ]);
+    S.jobs = jobs;
+    S.scheduleQueue = qPosts;
+    S.accounts = accs;
     const running = S.jobs.filter(j => ["RUNNING", "QUEUED"].includes(j.status)).length;
     const review = S.jobs.filter(j => j.status === "AWAITING_SELECTION").length;
     const pending = S.jobs.reduce((n, j) => n + (j.clips || []).filter(c => (c.status || "PENDING") === "PENDING").length, 0);
     $("#b-queue").textContent = running || ""; $("#b-review").textContent = review || ""; $("#b-clips").textContent = pending || "";
+    const bSched = $("#b-schedule"); if (bSched) bSched.textContent = qPosts.length || "";
     if (S.route === "queue") renderQueue();
     if (S.route === "clips") updateClipsLive();
+    if (S.route === "schedule" && !document.activeElement.matches("input,textarea,select")) renderSchedule();
   } catch (e) { /* server restarting */ }
 }
 async function refreshSys() {
@@ -47,7 +56,7 @@ function route() {
   const [r, arg] = (location.hash.slice(1) || "new").split("/");
   S.route = r; S.arg = arg || null; S.focus = 0;
   $$("#nav a").forEach(a => a.classList.toggle("on", a.dataset.page === r));
-  ({ new: renderNew, queue: renderQueue, review: renderReview, clips: renderClips, live: renderLive, campaigns: renderCampaigns, settings: renderSettings }[r] || renderNew)();
+  ({ new: renderNew, queue: renderQueue, review: renderReview, clips: renderClips, schedule: renderSchedule, live: renderLive, campaigns: renderCampaigns, settings: renderSettings }[r] || renderNew)();
 }
 window.addEventListener("hashchange", route);
 
@@ -335,6 +344,17 @@ function drawClips(job) {
         <div class="row" style="justify-content:space-between"><div class="seg" data-lay>${[["split", "Split"], ["gameplay", "Framed"], ["irl", "Follow"], ["face", "Face"]].map(([v, l]) => `<button data-v="${v}" class="${lay === v ? "on" : ""}">${l}</button>`).join("")}</div>
           <button class="btn sm" data-rr ${c.busy ? "disabled" : ""}>Re-render</button></div>
         <div class="acts"><button class="btn keep ${c.status === "KEPT" ? "on" : ""}" data-st="KEPT">✓ Keep</button><button class="btn rej ${c.status === "REJECTED" ? "on" : ""}" data-st="REJECTED">✕ Reject</button></div>
+        <div class="sched-box" style="margin-top:2px">
+          ${c.assigned_account ? `<div class="row small muted" style="background:var(--s2);padding:6px 10px;border-radius:6px;justify-content:space-between"><span style="color:var(--ac);font-weight:600">✓ Scheduled to ${esc(c.assigned_account)}</span><span class="small muted">Locked</span></div>` : `
+            <div class="row" style="gap:6px">
+              <select class="small" data-sched-acc style="flex:1;padding:5px 8px;font-size:12px">
+                <option value="">Schedule to account...</option>
+                ${(S.accounts || []).map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${a.today_count}/${a.max_clips_per_day || 4})</option>`).join("")}
+              </select>
+              <button class="btn sm pri" data-sched-btn>📅 Schedule</button>
+            </div>
+          `}
+        </div>
         <div class="col"><div class="tabs" data-tabs>${[["youtube", "Shorts"], ["tiktok", "TikTok"], ["reels", "Reels"], ["x", "X"]].map(([k, l], t) => `<button class="btn sm ${t ? "ghost" : ""}" data-tab="${k}">${l}</button>`).join("")}</div>
           <div class="capbox" data-cap>${esc(capText(p, "youtube"))}</div>
           <button class="btn sm" data-copy>Copy caption</button></div>
@@ -346,6 +366,29 @@ function drawClips(job) {
     $$("[data-lay] button", el).forEach(b => b.onclick = () => { $$("[data-lay] button", el).forEach(x => x.classList.toggle("on", x === b)); });
     $("[data-rr]", el).onclick = () => rerender(job, i, el);
     $$("[data-st]", el).forEach(b => b.onclick = () => setStatus(job, i, c.status === b.dataset.st ? "PENDING" : b.dataset.st));
+    const schedBtn = $("[data-sched-btn]", el);
+    if (schedBtn) {
+      schedBtn.onclick = async () => {
+        const aid = $("[data-sched-acc]", el).value;
+        if (!aid) return toast("Select an account first", true);
+        try {
+          schedBtn.disabled = true;
+          schedBtn.textContent = "Scheduling…";
+          const res = await api("/api/social/schedule", {
+            method: "POST",
+            body: { account_id: aid, clip_path: c.path, title: c.hook_title || undefined }
+          });
+          toast(`Scheduled to ${res.account_name || aid} for ${res.scheduled_time.replace('T', ' ')}`);
+          c.assigned_account = res.account_name || aid;
+          renderClipsKeepScroll();
+          refresh();
+        } catch (e) {
+          toast(e.message, true);
+          schedBtn.disabled = false;
+          schedBtn.textContent = "📅 Schedule";
+        }
+      };
+    }
     $$("[data-tab]", el).forEach(b => b.onclick = () => { tab = b.dataset.tab; $$("[data-tab]", el).forEach(x => x.classList.toggle("ghost", x !== b)); $("[data-cap]", el).textContent = capText(c.platforms || {}, tab); });
     $("[data-copy]", el).onclick = async () => { await navigator.clipboard.writeText($("[data-cap]", el).textContent); toast("Caption copied"); };
     el.onmousedown = e => { if (!e.target.closest("button,input,video")) { S.focus = +el.dataset.n; $$(".clip").forEach(x => x.classList.toggle("focus", x === el)); } };
@@ -380,6 +423,405 @@ function updateClipsLive() {
   const sig = job.status + "|" + job.clips.map(c => `${c.busy}|${c.rendered_at}|${c.status}`).join(",");
   if (lastClipSig && sig !== lastClipSig && !document.activeElement.matches("input")) renderClipsKeepScroll();
   lastClipSig = sig;
+}
+
+/* ---------------- SCHEDULE & ACCOUNTS ---------------- */
+let uploadDraft = null;
+
+async function handleFileUpload(file) {
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    toast("Uploading " + file.name + "…");
+    const r = await fetch("/api/social/upload-file", { method: "POST", body: fd });
+    if (!r.ok) { const t = await r.text(); throw new Error(t); }
+    const data = await r.json();
+    uploadDraft = {
+      filename: data.filename,
+      path: data.path,
+      full_path: data.full_path,
+      title: data.filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '),
+      desc: ""
+    };
+    toast("Clip ready for scheduling!");
+    renderSchedule();
+  } catch (e) {
+    toast("Upload failed: " + e.message, true);
+  }
+}
+
+async function renderSchedule() {
+  const [accounts, queue] = await Promise.all([
+    api("/api/social/accounts").catch(() => []),
+    api("/api/social/queue").catch(() => [])
+  ]);
+  S.accounts = accounts;
+  S.scheduleQueue = queue;
+
+  const editingId = S.activeAccount;
+  const editingAcc = accounts.find(a => a.id === editingId) || (editingId === "new" ? {
+    id: "",
+    name: "New Account Profile",
+    max_clips_per_day: 4,
+    schedule_slots: ["11:00", "15:00", "19:00", "22:00"],
+    platforms: {
+      youtube: { enabled: true, channel_name: "" },
+      instagram: { enabled: true, account_name: "" },
+      facebook: { enabled: false, page_name: "" },
+      tiktok: { enabled: true, account_name: "" }
+    }
+  } : null);
+
+  main.innerHTML = `
+  <div class="head">
+    <div>
+      <h1>Publish & Schedule</h1>
+      <p>Connect your YouTube, TikTok, Instagram & Facebook accounts. Videos are scheduled natively to publish automatically — even if your laptop is shut down.</p>
+    </div>
+    <span class="sp"></span>
+    <button class="btn pri" id="add-acc-btn">＋ New Account Profile</button>
+  </div>
+
+  <div class="grid2" style="margin-bottom:24px">
+    <!-- Accounts Section -->
+    <div class="col" style="gap:14px">
+      <div class="row" style="justify-content:space-between">
+        <span class="lbl">Connected Accounts (${accounts.length} / 4)</span>
+        <span class="muted small">Max 3-4 clips/day per account</span>
+      </div>
+      ${accounts.length ? accounts.map(a => {
+        const plats = a.platforms || {};
+        const count = a.today_count || 0;
+        const max = a.max_clips_per_day || 4;
+        const pct = Math.min(100, (count / max) * 100);
+        const isFull = count >= max;
+        return `
+        <div class="acc-card ${editingId === a.id ? "on" : ""}">
+          <div class="row" style="justify-content:space-between">
+            <div>
+              <b style="font-size:15px">${esc(a.name || a.id)}</b>
+              <div class="muted small" style="margin-top:2px">ID: ${esc(a.id)}</div>
+            </div>
+            <div class="row" style="gap:6px">
+              <button class="btn sm ghost" data-edit-acc="${esc(a.id)}">✏ Edit</button>
+              <button class="btn sm danger ghost" data-del-acc="${esc(a.id)}">✕</button>
+            </div>
+          </div>
+
+          <div class="col" style="gap:4px">
+            <div class="acc-quota">
+              <span>Today's Quota:</span>
+              <div class="quota-bar ${isFull ? "full" : ""}">
+                <div style="width:${pct}%"></div>
+              </div>
+              <span class="${isFull ? "chip warn" : "chip ok"}">${count} / ${max} today</span>
+            </div>
+            <div class="muted small">Next auto slot: <b style="color:var(--tx)">${esc(a.next_slot || "Pending")}</b></div>
+          </div>
+
+          <div class="plat-pills">
+            <span class="plat-pill ${(plats.youtube || {}).enabled ? "active" : ""}">
+              YouTube ${(plats.youtube || {}).channel_name ? "· " + esc(plats.youtube.channel_name) : ((plats.youtube || {}).enabled ? "✓" : "off")}
+            </span>
+            <span class="plat-pill ${(plats.instagram || {}).enabled ? "active" : ""}">
+              Instagram ${(plats.instagram || {}).account_name ? "· " + esc(plats.instagram.account_name) : ((plats.instagram || {}).enabled ? "✓" : "off")}
+            </span>
+            <span class="plat-pill ${(plats.tiktok || {}).enabled ? "active" : ""}">
+              TikTok ${(plats.tiktok || {}).account_name ? "· " + esc(plats.tiktok.account_name) : ((plats.tiktok || {}).enabled ? "✓" : "off")}
+            </span>
+            <span class="plat-pill ${(plats.facebook || {}).enabled ? "active" : ""}">
+              Facebook ${(plats.facebook || {}).page_name ? "· " + esc(plats.facebook.page_name) : ((plats.facebook || {}).enabled ? "✓" : "off")}
+            </span>
+          </div>
+        </div>`;
+      }).join("") : `<div class="empty"><b>No accounts added yet</b>Click "＋ New Account Profile" above to configure your first account.</div>`}
+
+      ${editingAcc ? `
+      <div class="card" style="border-color:var(--ac);margin-top:8px">
+        <b style="font-size:15px;display:block;margin-bottom:12px">${editingAcc.id ? "Edit Account: " + esc(editingAcc.name) : "Create Account Profile"}</b>
+        <div class="formgrid">
+          <div class="col" style="grid-column:1/-1">
+            <span class="lbl">Account Name / Label</span>
+            <input type="text" id="acc-name" value="${esc(editingAcc.name || "")}" placeholder="e.g. Account A - Apex Gaming">
+          </div>
+          <div class="col">
+            <span class="lbl">Daily Limit (Max Clips)</span>
+            <input type="number" id="acc-max" min="1" max="10" value="${editingAcc.max_clips_per_day || 4}">
+          </div>
+          <div class="col">
+            <span class="lbl">Time Slots (HH:MM, comma-separated)</span>
+            <input type="text" id="acc-slots" value="${esc((editingAcc.schedule_slots || []).join(", "))}" placeholder="11:00, 15:00, 19:00, 22:00">
+          </div>
+
+          <!-- Platforms Config -->
+          <div class="col" style="grid-column:1/-1;margin-top:6px">
+            <span class="lbl">Connected Social Platforms</span>
+            <div class="card col" style="gap:10px;background:var(--bg);margin-top:4px">
+              <div class="row" style="justify-content:space-between">
+                <label class="row small"><input type="checkbox" id="plat-yt" ${((editingAcc.platforms || {}).youtube || {}).enabled ? "checked" : ""}> YouTube Shorts</label>
+                <input type="text" id="plat-yt-name" style="width:200px" placeholder="Channel Name" value="${esc(((editingAcc.platforms || {}).youtube || {}).channel_name || "")}">
+              </div>
+              <div class="row" style="justify-content:space-between">
+                <label class="row small"><input type="checkbox" id="plat-ig" ${((editingAcc.platforms || {}).instagram || {}).enabled ? "checked" : ""}> Instagram Reels</label>
+                <input type="text" id="plat-ig-name" style="width:200px" placeholder="IG Handle / Account" value="${esc(((editingAcc.platforms || {}).instagram || {}).account_name || "")}">
+              </div>
+              <div class="row" style="justify-content:space-between">
+                <label class="row small"><input type="checkbox" id="plat-tt" ${((editingAcc.platforms || {}).tiktok || {}).enabled ? "checked" : ""}> TikTok</label>
+                <input type="text" id="plat-tt-name" style="width:200px" placeholder="TikTok Handle" value="${esc(((editingAcc.platforms || {}).tiktok || {}).account_name || "")}">
+              </div>
+              <div class="row" style="justify-content:space-between">
+                <label class="row small"><input type="checkbox" id="plat-fb" ${((editingAcc.platforms || {}).facebook || {}).enabled ? "checked" : ""}> Facebook Reels</label>
+                <input type="text" id="plat-fb-name" style="width:200px" placeholder="Page Name" value="${esc(((editingAcc.platforms || {}).facebook || {}).page_name || "")}">
+              </div>
+            </div>
+          </div>
+        </div>
+        <hr>
+        <div class="row">
+          <button class="btn pri" id="acc-save-btn">Save Account</button>
+          <button class="btn ghost" id="acc-cancel-btn">Cancel</button>
+        </div>
+      </div>` : ""}
+    </div>
+
+    <!-- File Explorer Uploader & Quick Scheduler -->
+    <div class="col" style="gap:14px">
+      <span class="lbl">Schedule from File Explorer</span>
+      <div class="card col" style="gap:14px">
+        <p class="small muted">Upload any rendered or custom <code>.mp4</code> straight from Windows File Explorer and dispatch it to an account across all its platforms.</p>
+        
+        <div class="dropzone" id="upload-zone">
+          <input type="file" id="file-input" accept="video/mp4,video/quicktime,video/x-matroska,video/webm" style="display:none">
+          <div style="font-size:32px">📁</div>
+          <b>Drag & drop .mp4 here or click to browse</b>
+          <span class="muted small">Select any clip from your computer</span>
+        </div>
+
+        <div id="upload-preview" style="display:${uploadDraft ? "flex" : "none"};flex-direction:column;gap:12px">
+          ${uploadDraft ? `
+          <div class="row" style="gap:12px;background:var(--s2);padding:10px;border-radius:var(--r2)">
+            <video src="${media(uploadDraft.path)}" style="width:70px;height:110px;border-radius:6px;object-fit:cover;background:#000" controls></video>
+            <div class="col" style="flex:1;min-width:0">
+              <b class="ttl" style="font-size:13px">${esc(uploadDraft.filename)}</b>
+              <span class="small muted mono">${esc(uploadDraft.path)}</span>
+              <button class="btn sm danger ghost" id="clear-upload" style="align-self:flex-start;margin-top:6px">✕ Remove file</button>
+            </div>
+          </div>
+          
+          <div class="col">
+            <span class="lbl">Target Account</span>
+            <select id="sched-account">
+              <option value="">Select Account...</option>
+              ${accounts.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${a.today_count}/${a.max_clips_per_day} today · Next: ${esc(a.next_slot)})</option>`).join("")}
+            </select>
+          </div>
+
+          <div class="col">
+            <span class="lbl">Hook / Title</span>
+            <input type="text" id="sched-title" value="${esc(uploadDraft.title || uploadDraft.filename.replace(/\.[^.]+$/, ''))}" maxlength="100">
+          </div>
+
+          <div class="col">
+            <span class="lbl">Caption / Description</span>
+            <textarea id="sched-desc" style="min-height:70px" placeholder="Add captions or hashtags (e.g. #gaming #shorts)">${esc(uploadDraft.desc || "")}</textarea>
+          </div>
+
+          <div class="col">
+            <span class="lbl">Schedule Time (Optional)</span>
+            <input type="datetime-local" id="sched-custom-time">
+            <span class="muted small">Leave blank to automatically use the account's next daily slot.</span>
+          </div>
+
+          <button class="btn pri big" id="do-schedule-btn">🚀 Schedule to All Platforms</button>
+          ` : ""}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scheduled Timeline Queue -->
+  <div class="col" style="gap:14px;margin-top:20px">
+    <div class="row" style="justify-content:space-between">
+      <span class="lbl">Scheduled Queue (${queue.length} posts queued)</span>
+      <span class="chip ok">⚡ Native Server Scheduling Active</span>
+    </div>
+    <p class="small muted" style="margin-top:-6px">
+      Platform servers hold your scheduled clips in their data centers and release them publicly at the scheduled minute even if your laptop is shut down.
+    </p>
+
+    <div class="q-list">
+      ${queue.length ? queue.map(p => {
+        const plats = p.platforms || {};
+        const pNames = Object.keys(plats).length ? Object.keys(plats).map(k => {
+          const st = plats[k].status || "SCHEDULED";
+          return `<span class="chip ${st === 'FAILED' ? 'bad' : 'ac'}">${k.toUpperCase()}: ${st}</span>`;
+        }).join(" ") : '<span class="chip ac">ALL PLATFORMS</span>';
+        return `
+        <div class="q-post">
+          <video class="q-thumb" src="${media(p.clip_path)}#t=0.1" preload="metadata"></video>
+          <div class="col" style="min-width:0;gap:4px">
+            <div class="row" style="gap:8px">
+              <b>${esc(p.title || p.clip_name)}</b>
+              <span class="chip blue">${esc(p.account_name || p.account_id)}</span>
+            </div>
+            <div class="muted small mono">
+              📅 Scheduled for: <b style="color:var(--tx)">${esc((p.scheduled_time || '').replace('T', ' '))}</b>
+            </div>
+            <div class="row" style="gap:6px;margin-top:4px">
+              ${pNames}
+              <span class="small muted">· ${esc(p.clip_name || '')}</span>
+            </div>
+          </div>
+          <button class="btn sm danger" data-del-post="${esc(p.id)}">Cancel</button>
+        </div>`;
+      }).join("") : `<div class="empty"><b>No posts in schedule queue</b>Assign rendered clips from the Clips page or upload a file above.</div>`}
+    </div>
+  </div>
+  `;
+
+  // Dropzone wiring
+  const zone = $("#upload-zone");
+  const fileInp = $("#file-input");
+  if (zone && fileInp) {
+    zone.onclick = () => fileInp.click();
+    zone.ondragover = e => { e.preventDefault(); zone.classList.add("dragover"); };
+    zone.ondragleave = () => zone.classList.remove("dragover");
+    zone.ondrop = e => {
+      e.preventDefault();
+      zone.classList.remove("dragover");
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+        handleFileUpload(e.dataTransfer.files[0]);
+      }
+    };
+    fileInp.onchange = e => {
+      if (e.target.files && e.target.files[0]) {
+        handleFileUpload(e.target.files[0]);
+      }
+    };
+  }
+
+  if ($("#clear-upload")) {
+    $("#clear-upload").onclick = () => {
+      uploadDraft = null;
+      renderSchedule();
+    };
+  }
+
+  if ($("#do-schedule-btn")) {
+    $("#do-schedule-btn").onclick = async () => {
+      const aid = $("#sched-account").value;
+      if (!aid) return toast("Select a target account first", true);
+      const title = $("#sched-title").value.trim();
+      const desc = $("#sched-desc").value.trim();
+      const customTime = $("#sched-custom-time").value;
+      let targetTime = customTime ? (customTime + ":00") : null;
+
+      try {
+        const btn = $("#do-schedule-btn");
+        btn.disabled = true;
+        btn.textContent = "Scheduling across platforms…";
+        const res = await api("/api/social/schedule", {
+          method: "POST",
+          body: {
+            account_id: aid,
+            clip_path: uploadDraft.path,
+            title: title || undefined,
+            description: desc || undefined,
+            scheduled_time: targetTime || undefined
+          }
+        });
+        toast(`Success! Scheduled to ${res.account_name || aid} for ${res.scheduled_time.replace('T', ' ')}`);
+        uploadDraft = null;
+        refresh();
+        renderSchedule();
+      } catch (e) {
+        toast("Scheduling failed: " + e.message, true);
+        const btn = $("#do-schedule-btn");
+        if (btn) { btn.disabled = false; btn.textContent = "🚀 Schedule to All Platforms"; }
+      }
+    };
+  }
+
+  // Account management handlers
+  $("#add-acc-btn").onclick = () => {
+    if (accounts.length >= 4) {
+      if (!confirm("You already have 4 accounts. Add another?")) return;
+    }
+    S.activeAccount = "new";
+    renderSchedule();
+  };
+
+  $$("[data-edit-acc]").forEach(b => b.onclick = () => {
+    S.activeAccount = b.dataset.editAcc;
+    renderSchedule();
+  });
+
+  $$("[data-del-acc]").forEach(b => b.onclick = async () => {
+    if (!confirm("Delete this account profile?")) return;
+    try {
+      await api("/api/social/accounts/" + b.dataset.delAcc, { method: "DELETE" });
+      toast("Account deleted");
+      if (S.activeAccount === b.dataset.delAcc) S.activeAccount = null;
+      refresh();
+      renderSchedule();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
+
+  if ($("#acc-cancel-btn")) {
+    $("#acc-cancel-btn").onclick = () => {
+      S.activeAccount = null;
+      renderSchedule();
+    };
+  }
+
+  if ($("#acc-save-btn")) {
+    $("#acc-save-btn").onclick = async () => {
+      const name = $("#acc-name").value.trim();
+      if (!name) return toast("Account name is required", true);
+      const maxClips = +$("#acc-max").value || 4;
+      const slots = $("#acc-slots").value.split(",").map(s => s.trim()).filter(Boolean);
+      const platforms = {
+        youtube: { enabled: $("#plat-yt").checked, channel_name: $("#plat-yt-name").value.trim() },
+        instagram: { enabled: $("#plat-ig").checked, account_name: $("#plat-ig-name").value.trim() },
+        tiktok: { enabled: $("#plat-tt").checked, account_name: $("#plat-tt-name").value.trim() },
+        facebook: { enabled: $("#plat-fb").checked, page_name: $("#plat-fb-name").value.trim() }
+      };
+      try {
+        await api("/api/social/accounts", {
+          method: "POST",
+          body: {
+            id: editingAcc.id || undefined,
+            name,
+            max_clips_per_day: maxClips,
+            schedule_slots: slots.length ? slots : ["11:00", "15:00", "19:00", "22:00"],
+            platforms
+          }
+        });
+        toast("Account profile saved");
+        S.activeAccount = null;
+        refresh();
+        renderSchedule();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+  }
+
+  // Cancel queued post
+  $$("[data-del-post]").forEach(b => b.onclick = async () => {
+    if (!confirm("Cancel this scheduled post?")) return;
+    try {
+      await api("/api/social/queue/" + b.dataset.delPost, { method: "DELETE" });
+      toast("Scheduled post cancelled");
+      refresh();
+      renderSchedule();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
 }
 
 /* ---------------- LIVE ---------------- */
