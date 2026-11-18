@@ -125,6 +125,8 @@ def system():
         "presets": presets,
         "polish": {"progress_bar": cfg.get("polish", {}).get("progress_bar", True)},
         "gameplay_aspect": cfg.get("facecam", {}).get("gameplay_aspect", "16:9"),
+        "default_sensitivity": cfg.get("signals", {}).get("default_sensitivity", "Medium"),
+        "live_sensitivity": cfg.get("signals", {}).get("live_sensitivity", 2.2),
     }
 
 
@@ -134,6 +136,8 @@ class SettingsIn(BaseModel):
     whisper_model: Optional[str] = None
     progress_bar: Optional[bool] = None
     gameplay_aspect: Optional[str] = None
+    default_sensitivity: Optional[str] = None
+    live_sensitivity: Optional[float] = None
 
 
 @app.post("/api/settings")
@@ -151,6 +155,14 @@ def settings(s: SettingsIn):
         save_user_override("polish", {"progress_bar": s.progress_bar})
     if s.gameplay_aspect:
         save_user_override("facecam", {"gameplay_aspect": s.gameplay_aspect})
+    if s.default_sensitivity:
+        save_user_override("signals", {"default_sensitivity": s.default_sensitivity})
+    if s.live_sensitivity is not None:
+        save_user_override("signals", {"live_sensitivity": float(s.live_sensitivity)})
+        for v in _live_sessions.values():
+            c = v.get("clipper")
+            if c and hasattr(c, "update_sensitivity"):
+                c.update_sensitivity(float(s.live_sensitivity))
     return system()
 
 
@@ -390,13 +402,34 @@ def live_status():
                 sess_info["telemetry"] = {"status": "error", "activity": str(e), "recent_events": []}
         sessions.append(sess_info)
     clips = []
-    for meta in sorted(glob.glob(os.path.join("clips", "live", "*", "*_metadata.json")), reverse=True)[:60]:
+    meta_files = glob.glob(os.path.join("clips", "live", "*", "*_metadata.json"))
+    meta_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    for meta in meta_files[:60]:
         try:
             with open(meta, "r", encoding="utf-8") as f:
                 clips.append(json.load(f))
         except Exception:
             pass
-    return {"sessions": sessions, "clips": clips}
+    cfg = load_config()
+    saved_sens = cfg.get("signals", {}).get("live_sensitivity", 2.2)
+    return {"sessions": sessions, "clips": clips, "sensitivity": saved_sens}
+
+
+class LiveSensIn(BaseModel):
+    sensitivity: float
+
+
+@app.post("/api/live/sensitivity")
+def live_set_sensitivity(body: LiveSensIn):
+    val = float(body.sensitivity)
+    save_user_override("signals", {"live_sensitivity": val})
+    updated = 0
+    for v in _live_sessions.values():
+        c = v.get("clipper")
+        if c and hasattr(c, "update_sensitivity"):
+            c.update_sensitivity(val)
+            updated += 1
+    return {"ok": True, "sensitivity": val, "sessions_updated": updated}
 
 
 @app.post("/api/live")

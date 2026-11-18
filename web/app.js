@@ -18,26 +18,28 @@ const platformOf = l => /twitch\.tv/.test(l) ? "Twitch" : /youtu/.test(l) ? "You
 const SIG = { chat_rate: ["Chat speed", "#d7ff3a"], chat_keywords: ["Chat words", "#ff4f8b"], streamer_loudness: ["Loudness", "#5aa8ff"], speech_energy: ["Speech", "#ffb23a"], youtube_heatmap: ["Replays", "#b78cff"] };
 const STAGES = [["download", "Download"], ["transcribe", "Transcribe"], ["detect", "Find moments"], ["selection", "Review"], ["render", "Render"]];
 
-const S = { jobs: [], sys: null, campaigns: [], accounts: [], bounties: [], scheduleQueue: [], route: "new", arg: null, focus: 0, clipFilter: "all", draft: {} };
+let savedDraft = {};
+try { savedDraft = JSON.parse(localStorage.getItem("clip_draft") || "{}"); } catch(e){}
+const S = { jobs: [], sys: null, campaigns: [], accounts: [], bounties: [], scheduleQueue: [], route: "new", arg: null, focus: 0, clipFilter: "all", draft: savedDraft, liveSens: localStorage.getItem("clip_live_sens") || "2.2" };
 
 /* ---------------- polling ---------------- */
 async function refresh() {
   try {
     const [jobs, qPosts, accs, live] = await Promise.all([
-      api("/api/jobs"),
+      api("/api/jobs").catch(() => []),
       api("/api/social/queue").catch(() => []),
       api("/api/social/accounts").catch(() => []),
       api("/api/live").catch(() => null)
     ]);
-    S.jobs = jobs;
-    S.scheduleQueue = qPosts;
-    S.accounts = accs;
+    S.jobs = jobs || [];
+    S.scheduleQueue = qPosts || [];
+    S.accounts = accs || [];
     S.live = live;
     const running = S.jobs.filter(j => ["RUNNING", "QUEUED"].includes(j.status)).length;
     const review = S.jobs.filter(j => j.status === "AWAITING_SELECTION").length;
     const pending = S.jobs.reduce((n, j) => n + (j.clips || []).filter(c => (c.status || "PENDING") === "PENDING").length, 0);
     $("#b-queue").textContent = running || ""; $("#b-review").textContent = review || ""; $("#b-clips").textContent = pending || "";
-    const bSched = $("#b-schedule"); if (bSched) bSched.textContent = qPosts.length || "";
+    const bSched = $("#b-schedule"); if (bSched) bSched.textContent = (qPosts || []).length || "";
     const bBounties = $("#b-bounties"); if (bBounties && S.bounties) bBounties.textContent = S.bounties.filter(b => b.status === "HOT").length ? "HOT" : "";
     const bLive = $("#b-live");
     if (bLive && live) {
@@ -46,7 +48,7 @@ async function refresh() {
     }
     if (S.route === "queue") renderQueue();
     if (S.route === "clips") updateClipsLive();
-    if (S.route === "live" && !document.activeElement.matches("input,textarea,select")) renderLive(false);
+    if (S.route === "live") renderLive(false);
     if (S.route === "schedule" && !document.activeElement.matches("input,textarea,select")) renderSchedule(false);
     if (S.route === "bounties" && !document.activeElement.matches("input,textarea,select") && !BOUNTIES.adding) renderBounties(false);
   } catch (e) { /* server restarting */ }
@@ -120,24 +122,34 @@ async function renderNew() {
     meta.innerHTML = ls.map(l => `<span class="chip ${platformOf(l) === "Link" ? "warn" : "ac"}">${platformOf(l)}</span>`).join("") || '<span class="muted small">No links yet</span>';
     $("#go").textContent = ls.length > 1 ? `Start ${ls.length} runs →` : "Start clipping →";
     d.links = links.value;
+    try { localStorage.setItem("clip_draft", JSON.stringify(d)); } catch(e){}
   };
   links.oninput = upd; upd();
   const showRules = () => {
     const c = S.campaigns.find(x => x.id === $("#camp").value); d.camp = $("#camp").value;
+    try { localStorage.setItem("clip_draft", JSON.stringify(d)); } catch(e){}
     const acc = c && c.assigned_account_id ? S.accounts.find(a => a.id === c.assigned_account_id) : null;
     $("#rules").innerHTML = c ? `<b style="color:var(--tx)">${esc(c.name)}</b>${c.streamer ? " · " + esc(c.streamer) : ""}\n${acc ? "👤 Assigned Account: " + esc(acc.name) + "\n" : ""}Length: ${c.min_clip_length || 15}–${c.max_clip_length || 180}s\nPlatforms: ${esc((c.allowed_upload_platforms || []).join(", ") || "any")}\nHashtags: ${esc((c.required_hashtags || []).join(" ") || "none")}\n${c.required_disclosure ? "Disclosure: " + esc(c.required_disclosure) + "\n" : ""}${c.rules_note ? "\n" + esc(c.rules_note) : ""}` : "Pick a campaign to see its rules here.";
   };
   $("#camp").onchange = showRules; showRules();
-  $$("#count button, #sens button, #ltype button").forEach(b => b.onclick = () => { $$("button", b.parentNode).forEach(x => x.classList.remove("on")); b.classList.add("on"); d[{ count: "count", sens: "sens", ltype: "ltype" }[b.parentNode.id]] = b.dataset.v; });
-  $("#preset").onchange = e => d.preset = e.target.value; $("#quality").onchange = e => d.quality = e.target.value;
-  $("#review").onchange = e => d.review = e.target.checked; $("#cpu").onchange = e => d.cpu = e.target.checked;
+  $$("#count button, #sens button, #ltype button").forEach(b => b.onclick = () => {
+    $$("button", b.parentNode).forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    d[{ count: "count", sens: "sens", ltype: "ltype" }[b.parentNode.id]] = b.dataset.v;
+    try { localStorage.setItem("clip_draft", JSON.stringify(d)); } catch(e){}
+  });
+  $("#preset").onchange = e => { d.preset = e.target.value; try { localStorage.setItem("clip_draft", JSON.stringify(d)); } catch(err){} };
+  $("#quality").onchange = e => { d.quality = e.target.value; try { localStorage.setItem("clip_draft", JSON.stringify(d)); } catch(err){} };
+  $("#review").onchange = e => { d.review = e.target.checked; try { localStorage.setItem("clip_draft", JSON.stringify(d)); } catch(err){} };
+  $("#cpu").onchange = e => { d.cpu = e.target.checked; try { localStorage.setItem("clip_draft", JSON.stringify(d)); } catch(err){} };
   $("#go").onclick = async () => {
     const ls = links.value.split("\n").map(s => s.trim()).filter(Boolean);
     if (!ls.length) return toast("Paste at least one link", true);
     const count = $("#count .on").dataset.v;
     try {
       await api("/api/jobs", { method: "POST", body: { links: ls, campaign_id: $("#camp").value || null, quality: $("#quality").value, top: count === "Auto" ? null : +count, sensitivity: +$("#sens .on").dataset.v, review: $("#review").checked, preset: $("#preset").value || null, cpu: $("#cpu").checked, layout: $("#ltype .on").dataset.v } });
-      d.links = ""; toast(`Queued ${ls.length} run${ls.length > 1 ? "s" : ""}`); location.hash = "#queue";
+      d.links = ""; try { localStorage.setItem("clip_draft", JSON.stringify(d)); } catch(e){}
+      toast(`Queued ${ls.length} run${ls.length > 1 ? "s" : ""}`); location.hash = "#queue";
     } catch (e) { toast(e.message, true); }
   };
 }
@@ -405,8 +417,8 @@ function updateClipsLive() {
   const jobs = clipJobs();
   const job = jobs.find(j => j.id === S.arg);
   if (!job) { if (jobs.length && !document.activeElement.matches("input")) renderClips(); return; }
-  const sig = job.status + "|" + job.clips.map(c => `${c.busy}|${c.rendered_at}|${c.status}`).join(",");
-  if (lastClipSig && sig !== lastClipSig && !document.activeElement.matches("input")) renderClipsKeepScroll();
+  const sig = job.status + "|" + (job.clips || []).length + "|" + (job.clips || []).map(c => `${c.busy}|${c.rendered_at}|${c.status}|${c.path}`).join(",");
+  if (sig !== lastClipSig && !document.activeElement.matches("input")) renderClipsKeepScroll();
   lastClipSig = sig;
 }
 
@@ -818,17 +830,19 @@ async function renderLive(full = true) {
   };
 
   if (!full && $("#live-sessions-box") && $("#live-clips-box")) {
-    const prevClipsCount = $("#live-clips-box").dataset.count || "0";
-    if (String(st.clips.length) !== prevClipsCount) {
-      $("#live-clips-box").innerHTML = renderClipsHtml();
-      $("#live-clips-box").dataset.count = String(st.clips.length);
+    const currentSig = (st.clips || []).map(c => `${c.filename}:${c.hook_title || ''}:${c.duration || 0}`).join('|');
+    const clipsBox = $("#live-clips-box");
+    if (clipsBox.dataset.sig !== currentSig) {
+      clipsBox.innerHTML = renderClipsHtml();
+      clipsBox.dataset.sig = currentSig;
+      clipsBox.dataset.count = String(st.clips.length);
     }
     $("#live-sessions-box").innerHTML = renderSessionsHtml();
     bindActions();
     return;
   }
 
-  const curSens = S.liveSens || "2.5";
+  const curSens = S.liveSens || (st.sensitivity != null ? String(st.sensitivity) : "2.2");
   main.innerHTML = `
   <div class="head">
     <div>
@@ -853,18 +867,26 @@ async function renderLive(full = true) {
     </div>
   </div>
   <div id="live-sessions-box">${renderSessionsHtml()}</div>
-  <div class="clips" id="live-clips-box" data-count="${st.clips.length}" style="margin-top:18px">${renderClipsHtml()}</div>`;
+  <div class="clips" id="live-clips-box" data-count="${st.clips.length}" data-sig="${(st.clips || []).map(c => `${c.filename}:${c.hook_title || ''}:${c.duration || 0}`).join('|')}" style="margin-top:18px">${renderClipsHtml()}</div>`;
 
-  $$("#lsens button").forEach(b => b.onclick = () => {
+  $$("#lsens button").forEach(b => b.onclick = async () => {
     $$("#lsens button").forEach(x => x.classList.remove("on"));
     b.classList.add("on");
     S.liveSens = b.dataset.v;
+    localStorage.setItem("clip_live_sens", b.dataset.v);
+    try {
+      const res = await api("/api/live/sensitivity", { method: "POST", body: { sensitivity: parseFloat(b.dataset.v) } });
+      const n = res.sessions_updated || 0;
+      toast(`Sensitivity saved: ${b.textContent.trim()} (${b.dataset.v})${n > 0 ? ` · ${n} live stream(s) updated` : ""}`);
+    } catch (e) {
+      toast(`Sensitivity saved: ${b.textContent.trim()}`);
+    }
   });
 
   $("#lgo").onclick = async () => {
     const url = $("#lurl").value.trim();
     if (!url) return toast("Paste a stream link", true);
-    const sens = parseFloat($("#lsens .on")?.dataset?.v || "2.5");
+    const sens = parseFloat($("#lsens .on")?.dataset?.v || S.liveSens || "2.2");
     try {
       await api("/api/live", { method: "POST", body: { url, campaign_id: $("#lcamp").value || null, sensitivity: sens } });
       toast("Watching " + url + ` (Sensitivity: ${sens})`);
@@ -1276,6 +1298,8 @@ function bindBounties(accounts) {
 async function renderSettings() {
   const s = S.sys = await api("/api/system");
   const models = s.ollama.models || [];
+  const curSens = s.default_sensitivity || localStorage.getItem("clip_default_sens") || "Medium";
+  const curLiveSens = s.live_sensitivity != null ? String(s.live_sensitivity) : (localStorage.getItem("clip_live_sens") || "2.2");
   main.innerHTML = `
   <div class="head"><div><h1>Settings</h1><p>Saved to config/user_overrides.yaml. Your main config file is never rewritten.</p></div></div>
   <div class="grid2">
@@ -1288,19 +1312,70 @@ async function renderSettings() {
       <hr>
       <div class="col"><span class="lbl">Whisper model</span><select id="s-whisper">${["large-v3", "large-v3-turbo", "distil-large-v3", "medium"].map(m => `<option ${m === s.whisper_model ? "selected" : ""}>${m}</option>`).join("")}</select>
         <span class="muted small">large-v3 = most accurate. large-v3-turbo = much faster, nearly as good. Good pick for launch day.</span></div>
+      <hr>
+      <div class="col"><span class="lbl">Default Run Sensitivity</span>
+        <div class="seg acc" id="s-defsens">${[["High", "Loose (1.5)"], ["Medium", "Normal (2.0)"], ["Low", "Picky (2.5)"]].map(([v, l]) => `<button data-v="${v}" class="${curSens === v ? "on" : ""}">${l}</button>`).join("")}</div>
+        <span class="muted small">Default hype spike threshold used when starting new VOD runs.</span></div>
     </div>
     <div class="card col" style="gap:16px">
       <div class="row" style="justify-content:space-between"><div><b>Progress bar</b><div class="muted small">Thin bar along the bottom that fills as the clip plays. Keeps people watching to the end.</div></div>
         <label class="switch"><input type="checkbox" id="s-bar" ${s.polish.progress_bar ? "checked" : ""}><span></span></label></div>
       <div class="col"><span class="lbl">Framed layout zoom</span><div class="seg acc" id="s-asp">${[["16:9", "Full frame"], ["4:3", "Slight zoom"], ["1:1", "Big zoom"]].map(([v, l]) => `<button data-v="${v}" class="${s.gameplay_aspect === v ? "on" : ""}">${l}</button>`).join("")}</div>
         <span class="muted small">How much of the 16:9 game frame to keep in the gameplay layout. More zoom = bigger on a phone.</span></div>
-      <hr><button class="btn pri" id="s-save">Save settings</button>
+      <hr>
+      <div class="col"><span class="lbl">Live Stream Clipper Sensitivity</span>
+        <div class="seg acc" id="s-livesens">${[["2.5", "Picky (2.5)"], ["2.0", "Normal (2.0)"], ["1.6", "Loose (1.6)"]].map(([v, l]) => `<button data-v="${v}" class="${curLiveSens === v ? "on" : ""}">${l}</button>`).join("")}</div>
+        <span class="muted small">Sensitivity for live stream monitoring. Updates running live monitors immediately.</span></div>
+      <hr><button class="btn pri" id="s-save">Save settings ✓</button>
     </div>
   </div>`;
-  $$("#s-asp button").forEach(b => b.onclick = () => { $$("#s-asp button").forEach(x => x.classList.toggle("on", x === b)); });
-  $("#s-save").onclick = async () => {
-    try { await api("/api/settings", { method: "POST", body: { llm_enabled: $("#s-llm").checked, llm_model: $("#s-model").value, whisper_model: $("#s-whisper").value, progress_bar: $("#s-bar").checked, gameplay_aspect: $("#s-asp .on").dataset.v } }); toast("Settings saved"); refreshSys(); } catch (e) { toast(e.message, true); }
+
+  const doSave = async (silent = false) => {
+    const aspBtn = $("#s-asp .on");
+    const defSensBtn = $("#s-defsens .on");
+    const liveSensBtn = $("#s-livesens .on");
+    const payload = {
+      llm_enabled: $("#s-llm").checked,
+      llm_model: $("#s-model").value,
+      whisper_model: $("#s-whisper").value,
+      progress_bar: $("#s-bar").checked,
+      gameplay_aspect: aspBtn ? aspBtn.dataset.v : "16:9",
+      default_sensitivity: defSensBtn ? defSensBtn.dataset.v : "Medium",
+      live_sensitivity: liveSensBtn ? parseFloat(liveSensBtn.dataset.v) : 2.2,
+    };
+    if (liveSensBtn) {
+      localStorage.setItem("clip_live_sens", liveSensBtn.dataset.v);
+      S.liveSens = liveSensBtn.dataset.v;
+    }
+    if (defSensBtn) {
+      localStorage.setItem("clip_default_sens", defSensBtn.dataset.v);
+    }
+    try {
+      await api("/api/settings", { method: "POST", body: payload });
+      toast(silent ? "Setting saved" : "Settings saved ✓");
+      refreshSys();
+    } catch (e) {
+      toast(e.message, true);
+    }
   };
+
+  $("#s-llm").onchange = () => doSave(true);
+  $("#s-model").onchange = () => doSave(true);
+  $("#s-whisper").onchange = () => doSave(true);
+  $("#s-bar").onchange = () => doSave(true);
+  $$("#s-asp button").forEach(b => b.onclick = () => {
+    $$("#s-asp button").forEach(x => x.classList.toggle("on", x === b));
+    doSave(true);
+  });
+  $$("#s-defsens button").forEach(b => b.onclick = () => {
+    $$("#s-defsens button").forEach(x => x.classList.toggle("on", x === b));
+    doSave(true);
+  });
+  $$("#s-livesens button").forEach(b => b.onclick = () => {
+    $$("#s-livesens button").forEach(x => x.classList.toggle("on", x === b));
+    doSave(true);
+  });
+  $("#s-save").onclick = () => doSave(false);
 }
 
 /* ---------------- boot ---------------- */

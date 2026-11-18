@@ -206,8 +206,14 @@ class LiveStreamClipper:
                 "analyzed_seconds": round(self.last_analyzed_time, 1),
                 "buffer_mb": self.buffer_mb,
                 "progress_pct": pct,
+                "sensitivity": self.sensitivity,
                 "recent_events": list(self.recent_events),
             }
+
+    def update_sensitivity(self, new_val: float):
+        old = self.sensitivity
+        self.sensitivity = float(new_val)
+        self._add_event("info", f"Sensitivity changed: {old:.1f} -> {self.sensitivity:.1f}")
 
     def start_capture_process(self) -> bool:
         """Start background stream capture from the start of the stream using streamlink or yt-dlp."""
