@@ -367,6 +367,7 @@ class LiveIn(BaseModel):
     url: str
     campaign_id: Optional[str] = None
     preset: Optional[str] = None
+    sensitivity: Optional[float] = 2.2
 
 
 @app.get("/api/live")
@@ -388,7 +389,7 @@ def live_start(body: LiveIn):
     from clipper.live import LiveStreamClipper
     camp = load_campaign(body.campaign_id) if body.campaign_id else None
     lc = LiveStreamClipper(stream_url=body.url.strip(), preset_name=body.preset or "classic_yellow",
-                           campaign=camp)
+                           campaign=camp, sensitivity=float(body.sensitivity or 2.2))
     t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
     t.start()
     sid = str(int(time.time()))
@@ -402,6 +403,20 @@ def live_stop(sid: str):
     if s:
         s["clipper"].stop()
     return {"ok": True}
+
+
+@app.delete("/api/live/clips/{filename}")
+def live_delete_clip(filename: str):
+    base = os.path.splitext(filename)[0]
+    deleted = 0
+    for f in glob.glob(os.path.join("clips", "live", "*", f"{base}*")):
+        try:
+            if os.path.isfile(f):
+                os.remove(f)
+                deleted += 1
+        except Exception:
+            pass
+    return {"ok": True, "deleted": deleted}
 
 
 # ----------------------------------------------------------------- publish (accounts + plan)

@@ -720,10 +720,23 @@ async function renderLive(full = true) {
       <div class="phone"><video src="${media(c.path)}#t=0.1" controls preload="metadata"></video></div>
       <div class="body">
         <b>${esc(c.hook_title || "")}</b>
-        <span class="muted small mono">${esc(c.timestamp || "")} · ${Math.round(c.duration || 0)}s · ${esc(c.layout || "")}</span>
+        <span class="muted small mono">${esc(c.timestamp || "")} · ${Math.round(c.duration || 0)}s · ${esc(c.layout || "")} · score ${(c.hype_score || 0).toFixed(1)}</span>
         <div class="capbox">${esc(capText(c.platforms || {}, "tiktok"))}</div>
+        <div class="row" style="margin-top:8px;justify-content:space-between;align-items:center">
+          <a class="btn sm" href="${media(c.path)}" download>Download 💾</a>
+          <button class="btn sm danger" data-delclip="${esc(c.filename)}">Delete ✕</button>
+        </div>
       </div>
     </div>`).join("") : `<div class="empty" style="grid-column:1/-1"><b>No live clips yet</b>Start watching a live stream above. Clips will automatically appear here as hype moments are clipped!</div>`;
+
+  const bindActions = () => {
+    $$("[data-stop]").forEach(b => b.onclick = async () => { await api("/api/live/" + b.dataset.stop, { method: "DELETE" }); renderLive(true); });
+    $$("[data-delclip]").forEach(b => b.onclick = async () => {
+      if (!confirm("Delete this live clip?")) return;
+      await api("/api/live/clips/" + b.dataset.delclip, { method: "DELETE" });
+      renderLive(true);
+    });
+  };
 
   if (!full && $("#live-sessions-box") && $("#live-clips-box")) {
     const prevClipsCount = $("#live-clips-box").dataset.count || "0";
@@ -732,10 +745,11 @@ async function renderLive(full = true) {
       $("#live-clips-box").dataset.count = String(st.clips.length);
     }
     $("#live-sessions-box").innerHTML = renderSessionsHtml();
-    $$("[data-stop]").forEach(b => b.onclick = async () => { await api("/api/live/" + b.dataset.stop, { method: "DELETE" }); renderLive(true); });
+    bindActions();
     return;
   }
 
+  const curSens = S.liveSens || "2.5";
   main.innerHTML = `
   <div class="head">
     <div>
@@ -743,27 +757,42 @@ async function renderLive(full = true) {
       <p>Records a live stream and auto-clips viral hype moments in real-time. Clips land here automatically.</p>
     </div>
   </div>
-  <div class="card row" style="margin-bottom:18px">
-    <input type="text" id="lurl" placeholder="https://www.youtube.com/live/... or https://twitch.tv/..." style="flex:2;min-width:260px">
-    <select id="lcamp" style="flex:1;min-width:160px"><option value="">No campaign</option>${camps.map(c => `<option value="${esc(c.id)}">${esc(c.name || c.id)}</option>`).join("")}</select>
-    <button class="btn pri" id="lgo">● Start watching</button>
+  <div class="card col" style="margin-bottom:18px;gap:12px">
+    <div class="row" style="gap:10px">
+      <input type="text" id="lurl" placeholder="https://www.youtube.com/live/... or https://twitch.tv/..." style="flex:2;min-width:260px">
+      <select id="lcamp" style="flex:1;min-width:160px"><option value="">No campaign</option>${camps.map(c => `<option value="${esc(c.id)}">${esc(c.name || c.id)}</option>`).join("")}</select>
+      <button class="btn pri" id="lgo">● Start watching</button>
+    </div>
+    <div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">
+      <span class="lbl" style="margin:0">Sensitivity:</span>
+      <div class="seg acc" id="lsens">
+        ${[["2.5", "Picky (Speed / Loud Streams)"], ["2.0", "Normal"], ["1.6", "Loose"]].map(([v, l]) =>
+          `<button data-v="${v}" class="${curSens === v ? "on" : ""}">${l}</button>`
+        ).join("")}
+      </div>
+      <span class="muted small">"Picky" stops filler clips and strictly waits for screaming, massive reactions, or genuine hype spikes.</span>
+    </div>
   </div>
   <div id="live-sessions-box">${renderSessionsHtml()}</div>
   <div class="clips" id="live-clips-box" data-count="${st.clips.length}" style="margin-top:18px">${renderClipsHtml()}</div>`;
 
+  $$("#lsens button").forEach(b => b.onclick = () => {
+    $$("#lsens button").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    S.liveSens = b.dataset.v;
+  });
+
   $("#lgo").onclick = async () => {
     const url = $("#lurl").value.trim();
     if (!url) return toast("Paste a stream link", true);
+    const sens = parseFloat($("#lsens .on")?.dataset?.v || "2.5");
     try {
-      await api("/api/live", { method: "POST", body: { url, campaign_id: $("#lcamp").value || null } });
-      toast("Watching " + url);
+      await api("/api/live", { method: "POST", body: { url, campaign_id: $("#lcamp").value || null, sensitivity: sens } });
+      toast("Watching " + url + ` (Sensitivity: ${sens})`);
       renderLive(true);
     } catch (e) { toast(e.message, true); }
   };
-  $$("[data-stop]").forEach(b => b.onclick = async () => {
-    await api("/api/live/" + b.dataset.stop, { method: "DELETE" });
-    renderLive(true);
-  });
+  bindActions();
 }
 
 /* ---------------- CAMPAIGNS ---------------- */

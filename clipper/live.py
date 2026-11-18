@@ -123,6 +123,7 @@ class LiveStreamClipper:
         preset_name: str = "classic_yellow",
         campaign: Optional[Dict[str, Any]] = None,
         use_cpu: bool = False,
+        sensitivity: float = 2.2,
     ):
         self.stream_url = stream_url
         self.quality = quality
@@ -131,6 +132,7 @@ class LiveStreamClipper:
         self.preset_name = preset_name
         self.campaign = campaign
         self.use_cpu = use_cpu
+        self.sensitivity = float(sensitivity)
 
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         self.output_dir = os.path.abspath(os.path.join(output_base_dir, today_str))
@@ -251,7 +253,7 @@ class LiveStreamClipper:
         found = find_moments(
             comments=comments,
             video_path=tail_wav,
-            z_thresh=2.0,
+            z_thresh=self.sensitivity,
             vod_id=None,
             before=20,
             after=20,

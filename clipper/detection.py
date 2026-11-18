@@ -354,10 +354,16 @@ def find_moments(
         target = int(top)
         floor = int(top)
     else:
-        # Auto: about one candidate per 5 minutes of stream, 6..40
-        target = int(min(cfg.get("signals", {}).get("safety_max_clips", safety_max), max(6, round(stream_min / 5.0))))
-        # Always offer at least a handful so there is something to review on a quiet stream
-        floor = int(min(target, max(4, round(stream_min / 12.0))))
+        # Auto: about one candidate per 5 minutes of stream.
+        # For short live chunks (< 15 min), do NOT force a high target or any floor:
+        # only genuine hype spikes above z_thresh should ever be clipped.
+        if stream_min < 15.0:
+            target = max(1, int(round(stream_min / 3.0)))
+            floor = 0  # No weak below-threshold moments allowed on live chunks
+        else:
+            target = int(min(cfg.get("signals", {}).get("safety_max_clips", safety_max), max(6, round(stream_min / 5.0))))
+            # Always offer at least a handful so there is something to review on a quiet full stream
+            floor = int(min(target, max(4, round(stream_min / 12.0))))
 
     # Peak picking: take the strongest seconds first and keep picks apart from each other
     min_sep = int(max(25.0, 0.6 * float(max_clip_length)))
