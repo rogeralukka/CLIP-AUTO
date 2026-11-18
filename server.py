@@ -8,10 +8,12 @@ serves files on your own machine to your own browser (bound to 127.0.0.1).
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 import uvicorn
@@ -405,7 +407,8 @@ def live_start(body: LiveIn):
                            campaign=camp, sensitivity=float(body.sensitivity or 2.2))
     t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
     t.start()
-    sid = str(int(time.time()))
+    clean_sid = re.sub(r"[^a-zA-Z0-9_]", "", lc.stream_id)[:10]
+    sid = f"{int(time.time())}_{clean_sid}"
     _live_sessions[sid] = {"url": body.url, "clipper": lc, "thread": t, "started": time.strftime("%H:%M")}
     return {"id": sid}
 
