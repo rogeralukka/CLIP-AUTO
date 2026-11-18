@@ -23,22 +23,30 @@ const S = { jobs: [], sys: null, campaigns: [], accounts: [], bounties: [], sche
 /* ---------------- polling ---------------- */
 async function refresh() {
   try {
-    const [jobs, qPosts, accs] = await Promise.all([
+    const [jobs, qPosts, accs, live] = await Promise.all([
       api("/api/jobs"),
       api("/api/social/queue").catch(() => []),
-      api("/api/social/accounts").catch(() => [])
+      api("/api/social/accounts").catch(() => []),
+      api("/api/live").catch(() => null)
     ]);
     S.jobs = jobs;
     S.scheduleQueue = qPosts;
     S.accounts = accs;
+    S.live = live;
     const running = S.jobs.filter(j => ["RUNNING", "QUEUED"].includes(j.status)).length;
     const review = S.jobs.filter(j => j.status === "AWAITING_SELECTION").length;
     const pending = S.jobs.reduce((n, j) => n + (j.clips || []).filter(c => (c.status || "PENDING") === "PENDING").length, 0);
     $("#b-queue").textContent = running || ""; $("#b-review").textContent = review || ""; $("#b-clips").textContent = pending || "";
     const bSched = $("#b-schedule"); if (bSched) bSched.textContent = qPosts.length || "";
     const bBounties = $("#b-bounties"); if (bBounties && S.bounties) bBounties.textContent = S.bounties.filter(b => b.status === "HOT").length ? "HOT" : "";
+    const bLive = $("#b-live");
+    if (bLive && live) {
+      const activeCount = (live.sessions || []).filter(s => s.running).length;
+      bLive.textContent = activeCount ? `${activeCount} LIVE` : "";
+    }
     if (S.route === "queue") renderQueue();
     if (S.route === "clips") updateClipsLive();
+    if (S.route === "live" && !document.activeElement.matches("input,textarea,select")) renderLive(false);
     if (S.route === "schedule" && !document.activeElement.matches("input,textarea,select")) renderSchedule(false);
     if (S.route === "bounties" && !document.activeElement.matches("input,textarea,select") && !BOUNTIES.adding) renderBounties(false);
   } catch (e) { /* server restarting */ }
@@ -692,21 +700,70 @@ function bindPublish(acc, editing) {
 }
 
 /* ---------------- LIVE ---------------- */
-async function renderLive() {
+async function renderLive(full = true) {
   const [st, camps] = await Promise.all([api("/api/live"), api("/api/campaigns").catch(() => [])]);
-  $("#b-live").textContent = st.sessions.filter(s => s.running).length || "";
+  const activeCount = (st.sessions || []).filter(s => s.running).length;
+  const bLive = $("#b-live");
+  if (bLive) bLive.textContent = activeCount ? `${activeCount} LIVE` : "";
+
+  const renderSessionsHtml = () => (st.sessions || []).map(s => `
+    <div class="card row" style="margin-bottom:10px">
+      ${s.running ? '<span class="chip hot">● LIVE</span>' : '<span class="chip">stopped</span>'}
+      <b class="ttl">${esc(s.url)}</b>
+      <span class="muted small">since ${s.started}</span>
+      <span style="flex:1"></span>
+      <button class="btn sm danger" data-stop="${s.id}">Stop</button>
+    </div>`).join("");
+
+  const renderClipsHtml = () => st.clips.length ? st.clips.map(c => `
+    <div class="clip">
+      <div class="phone"><video src="${media(c.path)}#t=0.1" controls preload="metadata"></video></div>
+      <div class="body">
+        <b>${esc(c.hook_title || "")}</b>
+        <span class="muted small mono">${esc(c.timestamp || "")} · ${Math.round(c.duration || 0)}s · ${esc(c.layout || "")}</span>
+        <div class="capbox">${esc(capText(c.platforms || {}, "tiktok"))}</div>
+      </div>
+    </div>`).join("") : `<div class="empty" style="grid-column:1/-1"><b>No live clips yet</b>Start watching a live stream above. Clips will automatically appear here as hype moments are clipped!</div>`;
+
+  if (!full && $("#live-sessions-box") && $("#live-clips-box")) {
+    const prevClipsCount = $("#live-clips-box").dataset.count || "0";
+    if (String(st.clips.length) !== prevClipsCount) {
+      $("#live-clips-box").innerHTML = renderClipsHtml();
+      $("#live-clips-box").dataset.count = String(st.clips.length);
+    }
+    $("#live-sessions-box").innerHTML = renderSessionsHtml();
+    $$("[data-stop]").forEach(b => b.onclick = async () => { await api("/api/live/" + b.dataset.stop, { method: "DELETE" }); renderLive(true); });
+    return;
+  }
+
   main.innerHTML = `
-  <div class="head"><div><h1>Live</h1><p>Records a live stream and clips it while it's happening. A clip lands here a few minutes after the moment.</p></div></div>
+  <div class="head">
+    <div>
+      <h1>Live Stream Clipper</h1>
+      <p>Records a live stream and auto-clips viral hype moments in real-time. Clips land here automatically.</p>
+    </div>
+  </div>
   <div class="card row" style="margin-bottom:18px">
-    <input type="text" id="lurl" placeholder="https://www.twitch.tv/streamer" style="flex:2;min-width:260px">
+    <input type="text" id="lurl" placeholder="https://www.youtube.com/live/... or https://twitch.tv/..." style="flex:2;min-width:260px">
     <select id="lcamp" style="flex:1;min-width:160px"><option value="">No campaign</option>${camps.map(c => `<option value="${esc(c.id)}">${esc(c.name || c.id)}</option>`).join("")}</select>
-    <button class="btn pri" id="lgo">● Start watching</button></div>
-  ${st.sessions.map(s => `<div class="card row" style="margin-bottom:10px">${s.running ? '<span class="chip hot">● LIVE</span>' : '<span class="chip">stopped</span>'}<b class="ttl">${esc(s.url)}</b><span class="muted small">since ${s.started}</span><span style="flex:1"></span><button class="btn sm danger" data-stop="${s.id}">Stop</button></div>`).join("")}
-  <div class="clips" style="margin-top:18px">${st.clips.length ? st.clips.map(c => `<div class="clip"><div class="phone"><video src="${media(c.path)}#t=0.1" controls preload="metadata"></video></div>
-    <div class="body"><b>${esc(c.hook_title || "")}</b><span class="muted small mono">${esc(c.timestamp || "")} · ${Math.round(c.duration || 0)}s · ${esc(c.layout || "")}</span>
-    <div class="capbox">${esc(capText(c.platforms || {}, "tiktok"))}</div></div></div>`).join("") : `<div class="empty" style="grid-column:1/-1"><b>No live clips yet</b>Start watching a stream above. Works best on Twitch (it reads chat too).</div>`}</div>`;
-  $("#lgo").onclick = async () => { const url = $("#lurl").value.trim(); if (!url) return toast("Paste a stream link", true); try { await api("/api/live", { method: "POST", body: { url, campaign_id: $("#lcamp").value || null } }); toast("Watching " + url); renderLive(); } catch (e) { toast(e.message, true); } };
-  $$("[data-stop]").forEach(b => b.onclick = async () => { await api("/api/live/" + b.dataset.stop, { method: "DELETE" }); renderLive(); });
+    <button class="btn pri" id="lgo">● Start watching</button>
+  </div>
+  <div id="live-sessions-box">${renderSessionsHtml()}</div>
+  <div class="clips" id="live-clips-box" data-count="${st.clips.length}" style="margin-top:18px">${renderClipsHtml()}</div>`;
+
+  $("#lgo").onclick = async () => {
+    const url = $("#lurl").value.trim();
+    if (!url) return toast("Paste a stream link", true);
+    try {
+      await api("/api/live", { method: "POST", body: { url, campaign_id: $("#lcamp").value || null } });
+      toast("Watching " + url);
+      renderLive(true);
+    } catch (e) { toast(e.message, true); }
+  };
+  $$("[data-stop]").forEach(b => b.onclick = async () => {
+    await api("/api/live/" + b.dataset.stop, { method: "DELETE" });
+    renderLive(true);
+  });
 }
 
 /* ---------------- CAMPAIGNS ---------------- */

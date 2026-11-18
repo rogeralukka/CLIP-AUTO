@@ -159,38 +159,35 @@ class LiveStreamClipper:
 
     def start_capture_process(self) -> bool:
         """Start background stream capture from the start of the stream using streamlink or yt-dlp."""
-        # For YouTube live streams: yt-dlp with --live-from-start is the most reliable way
-        # to capture from the beginning of the broadcast.
-        if is_youtube(self.stream_url):
+        streamlink_bin = get_streamlink_path()
+
+        if streamlink_bin and os.path.isfile(streamlink_bin):
+            # Streamlink writes a continuous, single MPEG-TS stream directly to self.buffer_file.
+            # It handles YouTube, Twitch, and Kick streams, and ffmpeg can read the .ts buffer
+            # incrementally while it is actively being downloaded.
+            # --force prevents streamlink from prompting to overwrite if buffer file exists.
+            cmd = [
+                streamlink_bin,
+                "--loglevel", "warning",
+                "--force",
+                "--hls-live-restart",
+                "-o", self.buffer_file,
+                self.stream_url,
+                self.quality,
+            ]
+            logger.info(f"Starting live stream capture with streamlink (--hls-live-restart --force): {' '.join(cmd)}")
+        else:
+            # Fallback to yt-dlp: MUST use single pre-muxed stream format and --no-part so that
+            # self.buffer_file is written directly instead of splitting into unjoined .part files.
             cmd = get_ytdlp_cmd(self.stream_url) + [
                 "--quiet",
+                "--no-part",
                 "--live-from-start",
-                "-f", "bestvideo[height<=1080]+bestaudio/best",
+                "-f", "best[height<=1080]/best",
                 "-o", self.buffer_file,
                 self.stream_url,
             ]
-            logger.info(f"Starting YouTube live stream capture from start: {' '.join(cmd)}")
-        else:
-            streamlink_bin = get_streamlink_path()
-            if streamlink_bin and os.path.isfile(streamlink_bin):
-                cmd = [
-                    streamlink_bin,
-                    "--loglevel", "warning",
-                    "--hls-live-restart",
-                    "-o", self.buffer_file,
-                    self.stream_url,
-                    self.quality,
-                ]
-                logger.info(f"Starting live stream capture with streamlink (--hls-live-restart): {' '.join(cmd)}")
-            else:
-                cmd = get_ytdlp_cmd(self.stream_url) + [
-                    "--quiet",
-                    "--live-from-start",
-                    "-f", "bestvideo[height<=1080]+bestaudio/best",
-                    "-o", self.buffer_file,
-                    self.stream_url,
-                ]
-                logger.info(f"Starting live stream capture with yt-dlp (--live-from-start): {' '.join(cmd)}")
+            logger.info(f"Starting live stream capture with yt-dlp fallback (--live-from-start): {' '.join(cmd)}")
 
         try:
             self._capture_proc = subprocess.Popen(
