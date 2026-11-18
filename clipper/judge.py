@@ -1,7 +1,12 @@
 """Local LLM Judge module via Ollama (Qwen 8B/7B) with VRAM unloading and strict JSON schema."""
 import json
 import logging
+import os
 import re
+import shutil
+import subprocess
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,6 +31,68 @@ def is_ollama_available(endpoint: str = "http://localhost:11434", timeout: float
     except Exception:
         pass
     return False, []
+
+
+_OLLAMA_START_LOCK = threading.Lock()
+_OLLAMA_PROC: Optional[subprocess.Popen] = None
+
+
+def ensure_ollama_running(endpoint: str = "http://localhost:11434") -> bool:
+    """Ensure Ollama daemon or desktop application is running. Starts it in background if not."""
+    global _OLLAMA_PROC
+    ok, _ = is_ollama_available(endpoint, timeout=1.0)
+    if ok:
+        return True
+
+    with _OLLAMA_START_LOCK:
+        ok, _ = is_ollama_available(endpoint, timeout=1.0)
+        if ok:
+            return True
+
+        app_path = os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama app.exe")
+        exe_path = shutil.which("ollama") or os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe")
+
+        # First try the desktop tray app on Windows if available
+        if os.path.isfile(app_path) and hasattr(os, "startfile"):
+            try:
+                os.startfile(app_path)
+            except Exception:
+                pass
+
+        # Check briefly if desktop app made it available
+        for _ in range(6):
+            time.sleep(0.5)
+            ok, _ = is_ollama_available(endpoint, timeout=1.0)
+            if ok:
+                logger.info("Ollama desktop app is running and reachable.")
+                return True
+
+        # If desktop app didn't start the server, start ollama serve CLI in background
+        target_exe = exe_path if (exe_path and os.path.isfile(exe_path)) else (
+            os.path.join(os.path.dirname(app_path), "ollama.exe") if os.path.isfile(app_path) else "ollama"
+        )
+        try:
+            flags = (subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS) if os.name == "nt" else 0
+            _OLLAMA_PROC = subprocess.Popen(
+                [target_exe, "serve"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=flags,
+            )
+            logger.info("Launched Ollama serve CLI in background.")
+        except Exception as e:
+            logger.warning(f"Failed to launch Ollama serve CLI: {e}")
+            return False
+
+        # Wait up to 25 seconds for Ollama server to become available
+        for _ in range(50):
+            time.sleep(0.5)
+            ok, _ = is_ollama_available(endpoint, timeout=1.0)
+            if ok:
+                logger.info("Ollama server is now up and reachable.")
+                return True
+        return False
 
 
 def validate_judge_response(raw_text: str) -> Optional[Dict[str, Any]]:
@@ -100,6 +167,7 @@ def call_ollama_generate(
         "prompt": prompt,
         "stream": False,
         "format": "json",
+        "think": False,
         "keep_alive": 0,  # Unload LLM model immediately after generation (12GB VRAM rule)
         "options": {
             "temperature": 0.2,

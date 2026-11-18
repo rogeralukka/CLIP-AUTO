@@ -25,7 +25,7 @@ os.chdir(ROOT)
 
 from clipper.campaigns import delete_campaign, list_campaigns, load_campaign, save_campaign  # noqa: E402
 from clipper.config import load_config, save_user_override  # noqa: E402
-from clipper.judge import is_ollama_available  # noqa: E402
+from clipper.judge import ensure_ollama_running, is_ollama_available  # noqa: E402
 from clipper.pipeline import rerender_clip  # noqa: E402
 from clipper.queue import (  # noqa: E402
     add_job, cancel_job, clear_finished_jobs, confirm_render_moments, delete_job,
@@ -41,6 +41,24 @@ app = FastAPI(title="CLIP AUTO Studio")
 MEDIA_DIRS = [os.path.join(ROOT, d) for d in ("clips", "exports", "downloads", "campaigns")]
 _rerender_lock = threading.Lock()
 _live_sessions: Dict[str, Dict[str, Any]] = {}
+_ollama_thread: Optional[threading.Thread] = None
+
+
+def _start_ollama_in_background():
+    """Start Ollama in a background thread if it is not already running."""
+    global _ollama_thread
+    if _ollama_thread is not None and _ollama_thread.is_alive():
+        return
+    cfg = load_config()
+    endpoint = cfg.get("llm", {}).get("endpoint", "http://localhost:11434")
+    _ollama_thread = threading.Thread(target=ensure_ollama_running, args=(endpoint,), daemon=True, name="OllamaStarter")
+    _ollama_thread.start()
+
+
+@app.on_event("startup")
+def _on_startup():
+    ensure_worker_running()
+    _start_ollama_in_background()
 
 
 # ----------------------------------------------------------------- helpers
@@ -86,7 +104,10 @@ def media(path: str):
 def system():
     cfg = load_config()
     llm = cfg.get("llm", {})
-    ok, models = is_ollama_available(llm.get("endpoint", "http://localhost:11434"))
+    endpoint = llm.get("endpoint", "http://localhost:11434")
+    ok, models = is_ollama_available(endpoint)
+    if not ok:
+        _start_ollama_in_background()
     presets = sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob("presets/*.json"))
     return {
         "gpu": _gpu_status(),
@@ -485,5 +506,6 @@ async def upload_custom_clip(file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     ensure_worker_running()
+    _start_ollama_in_background()
     print("\n  CLIP AUTO Studio  ->  http://127.0.0.1:8765\n")
     uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")
