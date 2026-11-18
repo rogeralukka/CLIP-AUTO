@@ -301,6 +301,50 @@ class LiveStreamClipper:
 
             # Transcribe
             words = transcribe_clip(rough_path, use_cpu=self.use_cpu, cache_dir=self.output_dir)
+            transcript_text = " ".join(w[2] for w in words).strip()
+
+            # AI Viral Judge Evaluation (Ollama Qwen):
+            # Only render if LLM confirms this clip has a standalone story & payoff
+            hook_title = None
+            cfg = load_config()
+            llm_cfg = cfg.get("llm", {})
+            if llm_cfg.get("enabled", True):
+                try:
+                    from .judge import is_ollama_available, judge_single_moment
+                    from .transcription import unload_whisper_model
+                    endpoint = llm_cfg.get("endpoint", "http://localhost:11434")
+                    model_name = llm_cfg.get("model", "qwen3:14b")
+                    avail, _ = is_ollama_available(endpoint)
+                    if avail:
+                        unload_whisper_model()
+                        chat_sample = []
+                        if self.chat is not None:
+                            chat_sample = [c.get("message", "") for c in self.chat.comments_between(start_s, end_s)]
+                        eval_res = judge_single_moment(
+                            moment=m,
+                            transcript=transcript_text,
+                            chat_sample=chat_sample,
+                            endpoint=endpoint,
+                            model=model_name,
+                        )
+                        if eval_res:
+                            score = float(eval_res.get("score", 5.0))
+                            standalone = eval_res.get("standalone", True)
+                            payoff = eval_res.get("payoff_inside", True)
+                            if score < 5.5 or not standalone or not payoff:
+                                logger.info(f"AI Judge rejected hollow moment at t={start_s:.1f}s (score={score:.1f}/10, standalone={standalone}, payoff={payoff}, reason: {eval_res.get('reason')})")
+                                try:
+                                    if os.path.isfile(rough_path):
+                                        os.remove(rough_path)
+                                except OSError:
+                                    pass
+                                continue
+                            if eval_res.get("hook_title"):
+                                hook_title = eval_res["hook_title"]
+                            m["score"] = score
+                            logger.info(f"AI Judge approved viral moment at t={start_s:.1f}s (score={score:.1f}/10, hook='{hook_title}')")
+                except Exception as e:
+                    logger.warning(f"Live LLM Judge evaluation failed, falling back: {e}")
 
             # Facecam layout: same checks as a normal run (cutout/green-screen cams, two cams,
             # stream-wide cam memory)
@@ -309,7 +353,8 @@ class LiveStreamClipper:
             layout, layout_note = resolve_layout("auto", facecam)
 
             # Hook title & ASS
-            hook_title = extract_hook_phrase(words)
+            if not hook_title:
+                hook_title = extract_hook_phrase(words)
             make_ass(words, ass_path, preset=preset, layout=layout, hook_title=hook_title,
                      caption_y=caption_anchor_y(layout, facecam))
 

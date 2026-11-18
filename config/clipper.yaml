@@ -28,7 +28,7 @@ signals:
   dedupe_overlap_threshold: 0.50 # Overlap ratio above which moments are discarded
 
 llm:
-  enabled: false
+  enabled: true
   endpoint: "http://localhost:11434"
   model: "qwen3:14b"             # ~9 GB, fits the 12 GB card fully; best at following the JSON format
   autostart_ollama: true         # Studio starts Ollama in the background when it opens
