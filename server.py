@@ -32,9 +32,10 @@ from clipper.queue import (  # noqa: E402
     ensure_worker_running, load_jobs, mutate_job, pause_job, resume_job,
 )
 from clipper.social import (  # noqa: E402
-    calculate_next_slot, delete_account, delete_schedule_entry, get_account,
-    get_assigned_clip_account, get_daily_scheduled_count, load_accounts,
-    load_schedule_queue, schedule_clip_to_account, upsert_account,
+    PLATFORM_LINKS, PLATFORMS, calculate_next_slot, connect_youtube, connection_state, delete_account,
+    delete_schedule_entry, disconnect, get_account, get_daily_scheduled_count, has_client_secret, load_accounts,
+    mark_platform, queue_view, retry_platform, save_client_secret, save_credentials, schedule_clip_to_account,
+    start_due_loop, upsert_account,
 )
 
 app = FastAPI(title="CLIP AUTO Studio")
@@ -58,6 +59,7 @@ def _start_ollama_in_background():
 @app.on_event("startup")
 def _on_startup():
     ensure_worker_running()
+    start_due_loop()          # publishes Instagram posts when their time comes (while Studio runs)
     _start_ollama_in_background()
 
 
@@ -164,10 +166,11 @@ def jobs():
     js = list(load_jobs().values())
     js.sort(key=lambda j: j.get("created_at") or "", reverse=True)
     try:
-        queue = load_schedule_queue()
         assigned_map = {}
-        for p in queue:
+        for p in queue_view():
             cp = p.get("clip_path")
+            if p.get("status") == "FAILED":
+                continue
             if cp:
                 norm = os.path.normpath(os.path.abspath(cp)).lower()
                 assigned_map[norm] = p.get("account_name") or p.get("account_id")
@@ -397,7 +400,7 @@ def live_stop(sid: str):
     return {"ok": True}
 
 
-# ----------------------------------------------------------------- social & scheduling
+# ----------------------------------------------------------------- publish (accounts + plan)
 class SocialAccountIn(BaseModel):
     id: Optional[str] = None
     name: str
@@ -412,78 +415,161 @@ class SchedulePostIn(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     scheduled_time: Optional[str] = None
+    mode: str = "plan"                       # "plan" (you post, using each site's own scheduler) or "auto" (API upload)
+    meta: Optional[Dict[str, Any]] = None    # the clip's generated captions (youtube_title, reels_caption, ...)
+
+
+class CredentialsIn(BaseModel):
+    platform: str
+    access_token: str
+    page_id: Optional[str] = None       # Facebook Page
+    ig_user_id: Optional[str] = None    # Instagram professional account
+
+
+def _safe_clip_path(path: str) -> str:
+    """Only clips inside the project's own folders may be published."""
+    full = os.path.abspath(path if os.path.isabs(path) else os.path.join(ROOT, path))
+    if not any(full.startswith(d + os.sep) for d in MEDIA_DIRS):
+        raise HTTPException(400, "That file is outside the clips folders.")
+    return full
 
 
 @app.get("/api/social/accounts")
 def get_social_accounts():
-    accounts = load_accounts()
     out = []
-    for aid, acc in accounts.items():
-        today_count = get_daily_scheduled_count(aid)
-        next_d, next_t = calculate_next_slot(aid)
+    for aid, acc in load_accounts().items():
         item = dict(acc)
         item["id"] = aid
-        item["today_count"] = today_count
-        item["next_slot"] = f"{next_d} {next_t}"
+        item["today_count"] = get_daily_scheduled_count(aid)
+        d, t = calculate_next_slot(aid)
+        item["next_slot"] = f"{d}T{t}:00"
+        item["connected"] = connection_state(aid)
         out.append(item)
     return out
 
 
+@app.get("/api/social/info")
+def social_info():
+    return {"links": PLATFORM_LINKS, "platforms": list(PLATFORMS), "has_client_secret": has_client_secret()}
+
+
 @app.post("/api/social/accounts")
 def upsert_social_account(body: SocialAccountIn):
-    aid = body.id or f"acc_{int(time.time())}"
     data = (body.model_dump if hasattr(body, "model_dump") else body.dict)(exclude={"id"})
-    saved_id = upsert_account(aid, data)
+    saved_id = upsert_account(body.id, data)
     return {"id": saved_id, "account": get_account(saved_id)}
 
 
 @app.delete("/api/social/accounts/{aid}")
 def remove_social_account(aid: str):
-    ok = delete_account(aid)
-    return {"ok": ok}
+    return {"ok": delete_account(aid)}
+
+
+@app.post("/api/social/client-secret")
+async def upload_client_secret(file: UploadFile = File(...)):
+    try:
+        save_client_secret(await file.read())
+    except (ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/social/accounts/{aid}/connect/youtube")
+def connect_youtube_account(aid: str):
+    """Opens Google's sign-in page in the browser; the login is saved when the user finishes."""
+    if not get_account(aid):
+        raise HTTPException(404, "Account not found")
+    if not has_client_secret():
+        raise HTTPException(400, "Add the Google client file first.")
+
+    def run():
+        try:
+            connect_youtube(aid)
+        except Exception as e:  # noqa: BLE001
+            print(f"[publish] YouTube sign-in failed: {e}")
+    threading.Thread(target=run, daemon=True, name="yt-signin").start()
+    return {"ok": True}
+
+
+@app.post("/api/social/accounts/{aid}/credentials")
+def save_account_credentials(aid: str, body: CredentialsIn):
+    if not get_account(aid):
+        raise HTTPException(404, "Account not found")
+    if body.platform == "facebook" and body.page_id:
+        save_credentials(aid, "facebook", {"access_token": body.access_token, "page_id": body.page_id})
+    elif body.platform == "instagram" and body.ig_user_id:
+        save_credentials(aid, "instagram", {"access_token": body.access_token, "ig_user_id": body.ig_user_id})
+    elif body.platform == "tiktok":
+        save_credentials(aid, "tiktok", {"access_token": body.access_token})
+    else:
+        raise HTTPException(400, "Missing the Page ID / Instagram user ID for that platform.")
+    return {"ok": True, "connected": connection_state(aid)}
+
+
+@app.delete("/api/social/accounts/{aid}/connect/{platform}")
+def disconnect_account(aid: str, platform: str):
+    if platform not in PLATFORMS:
+        raise HTTPException(400, "Unknown platform")
+    ok = disconnect(aid, platform)
+    return {"ok": ok, "connected": connection_state(aid)}
 
 
 @app.get("/api/social/queue")
 def get_social_queue():
-    q = load_schedule_queue()
-    q.sort(key=lambda x: x.get("scheduled_time") or "", reverse=True)
-    return q
+    return queue_view()
 
 
 @app.post("/api/social/schedule")
 def schedule_post(body: SchedulePostIn):
+    clip = _safe_clip_path(body.clip_path)
     try:
-        entry = schedule_clip_to_account(
-            account_id=body.account_id,
-            clip_path=body.clip_path,
-            title=body.title,
-            description=body.description,
-            target_time_iso=body.scheduled_time,
-        )
-        return entry
+        return schedule_clip_to_account(
+            account_id=body.account_id, clip_path=clip, title=body.title,
+            description=body.description, target_time_iso=body.scheduled_time, mode=body.mode, meta=body.meta)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"Scheduling error: {e}")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Could not add to the plan: {e}")
+
+
+@app.post("/api/social/queue/{pid}/{platform}/{action}")
+def update_platform(pid: str, platform: str, action: str):
+    if action in ("posted", "unposted"):
+        ok = mark_platform(pid, platform, action == "posted")
+    elif action == "retry":
+        ok = retry_platform(pid, platform)
+    else:
+        raise HTTPException(400, "Unknown action")
+    if not ok:
+        raise HTTPException(404, "Nothing to update")
+    return {"ok": True}
 
 
 @app.delete("/api/social/queue/{pid}")
 def cancel_scheduled_post(pid: str):
-    ok = delete_schedule_entry(pid)
-    return {"ok": ok}
+    return {"ok": delete_schedule_entry(pid)}
+
+
+@app.post("/api/social/reveal")
+def reveal_clip(body: Dict[str, str]):
+    """Open Explorer with the clip selected, so it can be picked in the platform's upload box."""
+    full = _safe_clip_path(body.get("path", ""))
+    if not os.path.isfile(full):
+        raise HTTPException(404, "Clip file not found")
+    if hasattr(os, "startfile"):
+        subprocess.Popen(["explorer", "/select,", full])
+    return {"ok": True, "folder": os.path.dirname(full)}
 
 
 @app.post("/api/social/upload-file")
 async def upload_custom_clip(file: UploadFile = File(...)):
-    ext = os.path.splitext(file.filename)[1].lower()
+    ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in (".mp4", ".mov", ".mkv", ".webm"):
         raise HTTPException(400, "Supported formats: .mp4, .mov, .mkv, .webm")
-
     upload_dir = os.path.join(ROOT, "clips", "custom_uploads")
     os.makedirs(upload_dir, exist_ok=True)
-
     safe_name = os.path.basename(file.filename).replace(" ", "_")
     target_path = os.path.join(upload_dir, safe_name)
     base, fext = os.path.splitext(safe_name)
@@ -491,17 +577,38 @@ async def upload_custom_clip(file: UploadFile = File(...)):
     while os.path.exists(target_path):
         target_path = os.path.join(upload_dir, f"{base}_{counter}{fext}")
         counter += 1
-
     with open(target_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
+    return {"ok": True, "filename": os.path.basename(target_path),
+            "path": os.path.relpath(target_path, ROOT).replace("\\", "/"), "full_path": target_path}
 
-    rel_path = os.path.relpath(target_path, ROOT).replace("\\", "/")
-    return {
-        "ok": True,
-        "filename": os.path.basename(target_path),
-        "path": rel_path,
-        "full_path": target_path,
-    }
+
+@app.get("/api/social/library")
+def clip_library():
+    """Every clip that can be planned: rendered job clips plus files dropped in from Explorer."""
+    taken = {os.path.normpath(os.path.abspath(e.get("clip_path", ""))).lower() for e in queue_view() if e["status"] != "FAILED"}
+    out = []
+    for j in sorted(load_jobs().values(), key=lambda x: x.get("created_at") or "", reverse=True):
+        if j.get("is_dev_test"):
+            continue
+        for c in (j.get("clips") or []):
+            p = c.get("path")
+            if not p or c.get("status") == "REJECTED":
+                continue
+            full = os.path.abspath(p if os.path.isabs(p) else os.path.join(ROOT, p))
+            if os.path.isfile(full):
+                out.append({"path": p, "name": os.path.basename(p), "title": c.get("hook_title") or "", "job": j["id"],
+                            "kept": c.get("status") == "KEPT", "meta": c.get("platforms") or {},
+                            "used": os.path.normpath(full).lower() in taken})
+    cu = os.path.join(ROOT, "clips", "custom_uploads")
+    if os.path.isdir(cu):
+        for n in sorted(os.listdir(cu)):
+            if n.lower().endswith((".mp4", ".mov", ".mkv", ".webm")):
+                rel = os.path.join("clips", "custom_uploads", n).replace("\\", "/")
+                full = os.path.join(cu, n)
+                out.append({"path": rel, "name": n, "title": os.path.splitext(n)[0].replace("_", " "), "job": None, "kept": True,
+                            "meta": {}, "used": os.path.normpath(full).lower() in taken})
+    return out
 
 
 def _start_ollama_in_background():

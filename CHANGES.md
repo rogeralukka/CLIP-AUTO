@@ -4,6 +4,33 @@ This document provides a comprehensive log of all architectural improvements, up
 
 ---
 
+## 2026-11-18 (night 3): Publish rebuilt - honest statuses, simple screen, secrets protected
+
+Audit of the first Publish & Schedule version (platform rules checked against current docs) and fixes:
+
+- **Default = "Plan" mode.** Studio keeps which clip goes to which account, when, and the caption for each
+  platform. At posting time you press Open (YouTube / TikTok Studio / Meta Business Suite), Copy caption,
+  Show the file, then use that site's own scheduler - those run in the platform's cloud, so the laptop can be
+  off. No logins inside Studio, no API audit, no ban risk. Tick "I posted it" per platform.
+- **Auto-upload is now optional (Advanced)** and tells the truth: YouTube (`publishAt`, but an un-audited Google
+  project is locked private), Facebook Page Reels (`scheduled_publish_time`), Instagram (API cannot schedule -
+  Studio publishes at the time while it runs; real container + `media_publish` flow), TikTok (no schedule field;
+  un-audited apps are private-only, so it uploads `SELF_ONLY`).
+- **Statuses are real.** Every platform stores PLANNED / UPLOADED_SCHEDULED / HELD / UPLOADED_PRIVATE /
+  PUBLISHED / POSTED / FAILED with the error text; the old code marked everything "SCHEDULED" even when all
+  uploads failed. A failed post no longer uses up the daily limit or locks the clip to an account.
+- Uploads run in the background (the page no longer hangs); times are time-zone aware; the next free slot looks
+  up to 30 days ahead; one clip = one account is still enforced.
+- **No fake data:** the placeholder "Account A/B/C" with made-up handles is gone; the account list starts empty.
+- **Secrets:** tokens and the Google client file are git-ignored (`config/tokens/`, `config/youtube_client_secret.json`,
+  `config/social_accounts.yaml`, `config/scheduled_posts.json`); account YAML holds only names/handles. Clip paths
+  for publishing must be inside the project's clips folders.
+- **New screen:** pick account -> pick clips (thumbnails, drop files from Explorer) -> pick time -> plan list by day
+  with one button per platform. Clips page has a single "Add to Publish plan" button. Login help (Google client
+  file, Sign in with Google, token boxes) sits under Advanced.
+- Tests: `tests/test_social.py`, `tests/test_server_social.py` rewritten (28 tests: statuses, quota/lock release,
+  payloads, secrets, endpoints). Not tested against live platforms - try one clip per platform first.
+
 ## 2026-11-18 (night 2): AI judge on a model that fits the card + Ollama starts with Studio
 
 - Default judge model is now `qwen3:14b` (~9 GB, fits the 12 GB card entirely; the old 27B spilled

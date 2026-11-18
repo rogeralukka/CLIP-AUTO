@@ -1,111 +1,92 @@
-"""tests/test_server_social.py - Unit tests for server social and scheduling endpoints."""
+"""tests/test_server_social.py - publish endpoints."""
 import io
 import os
 import shutil
 import tempfile
 import unittest
+
 from starlette.testclient import TestClient
 
-from clipper import social
 import server
+from clipper import social
 
 
-class TestServerSocialEndpoints(unittest.TestCase):
-
+class TestServerSocial(unittest.TestCase):
     def setUp(self):
-        self.tmp_dir = tempfile.mkdtemp()
-        self.orig_accounts_file = social.ACCOUNTS_FILE
-        self.orig_queue_file = social.SCHEDULE_QUEUE_FILE
-
-        social.ACCOUNTS_FILE = os.path.join(self.tmp_dir, "social_accounts.yaml")
-        social.SCHEDULE_QUEUE_FILE = os.path.join(self.tmp_dir, "scheduled_posts.json")
+        self.tmp = tempfile.mkdtemp()
+        self.saved = (social.ACCOUNTS_FILE, social.SCHEDULE_QUEUE_FILE, social.TOKENS_DIR, social.CLIENT_SECRET_FILE)
+        social.ACCOUNTS_FILE = os.path.join(self.tmp, "a.yaml")
+        social.SCHEDULE_QUEUE_FILE = os.path.join(self.tmp, "q.json")
+        social.TOKENS_DIR = os.path.join(self.tmp, "tokens")
+        social.CLIENT_SECRET_FILE = os.path.join(self.tmp, "c.json")
         self.client = TestClient(server.app)
+        self.clipdir = os.path.join(server.ROOT, "clips", "_test_publish")
+        os.makedirs(self.clipdir, exist_ok=True)
+        self.clip = os.path.join(self.clipdir, "t.mp4")
+        with open(self.clip, "wb") as f:
+            f.write(b"x")
 
     def tearDown(self):
-        social.ACCOUNTS_FILE = self.orig_accounts_file
-        social.SCHEDULE_QUEUE_FILE = self.orig_queue_file
-        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        (social.ACCOUNTS_FILE, social.SCHEDULE_QUEUE_FILE, social.TOKENS_DIR, social.CLIENT_SECRET_FILE) = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        shutil.rmtree(self.clipdir, ignore_errors=True)
 
-    def test_social_accounts_endpoints(self):
-        # 1. Create account
-        payload = {
-            "id": "acc_stream1",
-            "name": "Streamer 1 Main",
-            "max_clips_per_day": 3,
-            "schedule_slots": ["11:00", "16:00", "20:00"],
-            "platforms": {
-                "youtube": {"enabled": False, "channel_name": ""},
-                "tiktok": {"enabled": False, "account_name": ""},
-            }
-        }
-        res = self.client.post("/api/social/accounts", json=payload)
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["id"], "acc_stream1")
+    def add_account(self):
+        r = self.client.post("/api/social/accounts", json={"name": "Main", "platforms": {"youtube": {"enabled": True, "handle": "@m"}}})
+        self.assertEqual(r.status_code, 200)
+        return r.json()["id"]
 
-        # 2. Get accounts list
-        res = self.client.get("/api/social/accounts")
-        self.assertEqual(res.status_code, 200)
-        accounts = res.json()
-        self.assertEqual(len(accounts), 1)
-        self.assertEqual(accounts[0]["name"], "Streamer 1 Main")
-        self.assertEqual(accounts[0]["today_count"], 0)
-        self.assertIn("next_slot", accounts[0])
+    def test_starts_empty(self):
+        self.assertEqual(self.client.get("/api/social/accounts").json(), [])
+        self.assertEqual(self.client.get("/api/social/queue").json(), [])
 
-        # 3. Delete account
-        res = self.client.delete("/api/social/accounts/acc_stream1")
-        self.assertEqual(res.status_code, 200)
-        res = self.client.get("/api/social/accounts")
-        self.assertEqual(len(res.json()), 0)
+    def test_account_and_plan_flow(self):
+        aid = self.add_account()
+        accs = self.client.get("/api/social/accounts").json()
+        self.assertEqual(accs[0]["connected"]["youtube"], False)
+        self.assertEqual(accs[0]["today_count"], 0)
+        r = self.client.post("/api/social/schedule", json={"account_id": aid, "clip_path": self.clip, "title": "Moment",
+                                                           "scheduled_time": "2099-01-01T10:00:00"})
+        self.assertEqual(r.status_code, 200, r.text)
+        pid = r.json()["id"]
+        self.assertEqual(r.json()["status"], "TO POST")
+        r = self.client.post(f"/api/social/queue/{pid}/youtube/posted")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.client.get("/api/social/queue").json()[0]["status"], "DONE")
+        self.assertIsInstance(self.client.get("/api/social/library").json(), list)
+        self.assertEqual(self.client.delete(f"/api/social/queue/{pid}").json()["ok"], True)
 
-    def test_social_schedule_and_queue(self):
-        # Setup account
-        social.upsert_account("acc_prod", {
-            "name": "Production Channel",
-            "max_clips_per_day": 4,
-            "schedule_slots": ["12:00", "18:00"],
-        })
+    def test_clip_outside_project_is_refused(self):
+        aid = self.add_account()
+        outside = os.path.join(self.tmp, "x.mp4")
+        open(outside, "wb").write(b"x")
+        r = self.client.post("/api/social/schedule", json={"account_id": aid, "clip_path": outside})
+        self.assertEqual(r.status_code, 400)
 
-        # Create dummy video clip
-        dummy_clip = os.path.join(self.tmp_dir, "clip_sample.mp4")
-        with open(dummy_clip, "wb") as f:
-            f.write(b"\x00\x00\x00\x18ftypmp42")
+    def test_bad_client_secret_rejected(self):
+        r = self.client.post("/api/social/client-secret", files={"file": ("c.json", io.BytesIO(b'{"a":1}'), "application/json")})
+        self.assertEqual(r.status_code, 400)
+        good = b'{"installed":{"client_id":"x","client_secret":"y"}}'
+        r = self.client.post("/api/social/client-secret", files={"file": ("c.json", io.BytesIO(good), "application/json")})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(self.client.get("/api/social/info").json()["has_client_secret"])
 
-        # Schedule post
-        res = self.client.post("/api/social/schedule", json={
-            "account_id": "acc_prod",
-            "clip_path": dummy_clip,
-            "title": "Insane 1v4 Clutch",
-            "description": "Watch this clutch! #gaming",
-        })
-        self.assertEqual(res.status_code, 200)
-        post_data = res.json()
-        self.assertEqual(post_data["account_id"], "acc_prod")
-        self.assertEqual(post_data["title"], "Insane 1v4 Clutch")
-
-        # Check queue
-        res = self.client.get("/api/social/queue")
-        self.assertEqual(res.status_code, 200)
-        queue = res.json()
-        self.assertEqual(len(queue), 1)
-        post_id = queue[0]["id"]
-
-        # Cancel/delete from queue
-        res = self.client.delete(f"/api/social/queue/{post_id}")
-        self.assertEqual(res.status_code, 200)
-        res = self.client.get("/api/social/queue")
-        self.assertEqual(len(res.json()), 0)
+    def test_credentials_validation_and_disconnect(self):
+        aid = self.add_account()
+        r = self.client.post(f"/api/social/accounts/{aid}/credentials", json={"platform": "facebook", "access_token": "t"})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post(f"/api/social/accounts/{aid}/credentials", json={"platform": "facebook", "access_token": "t", "page_id": "5"})
+        self.assertTrue(r.json()["connected"]["facebook"])
+        r = self.client.delete(f"/api/social/accounts/{aid}/connect/facebook")
+        self.assertFalse(r.json()["connected"]["facebook"])
 
     def test_custom_clip_upload(self):
-        file_bytes = b"\x00\x00\x00\x18ftypmp42dummycontent"
-        files = {"file": ("test_upload.mp4", io.BytesIO(file_bytes), "video/mp4")}
-        res = self.client.post("/api/social/upload-file", files=files)
-        self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertTrue(data["ok"])
+        files = {"file": ("test_upload.mp4", io.BytesIO(b"\x00\x00\x00\x18ftypmp42dummy"), "video/mp4")}
+        r = self.client.post("/api/social/upload-file", files=files)
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
         self.assertIn("custom_uploads", data["path"])
-        # Clean up uploaded file
-        if os.path.exists(data["full_path"]):
-            os.remove(data["full_path"])
+        os.remove(data["full_path"])
 
 
 if __name__ == "__main__":

@@ -56,3 +56,11 @@ tests/test_clips/
 tests/test_scratch/
 tests/__pycache__/
 config/user_overrides.yaml
+
+# Publish: logins and your private plan - never commit these
+config/tokens/
+config/youtube_client_secret.json
+config/social_accounts.yaml
+config/scheduled_posts.json
+config/scheduled_posts.json.tmp
+clips/custom_uploads/
