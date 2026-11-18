@@ -267,6 +267,16 @@ def detect_pipeline_moments(
     return audio_path, resolved_chat_path, moments
 
 
+def _notify_clip_done(cb, clip: Dict[str, Any]) -> None:
+    """Tell the queue a clip is finished so it shows up in Clips right away."""
+    if not cb:
+        return
+    try:
+        cb(clip)
+    except Exception as e:  # never let a bookkeeping problem kill the render loop
+        logger.warning(f"Clip-done callback failed: {e}")
+
+
 def render_pipeline_moments(
     video_path: str,
     moments: List[Dict[str, Any]],
@@ -280,6 +290,7 @@ def render_pipeline_moments(
     vod_input: Optional[str] = None,
     full_transcript_data: Optional[Dict[str, Any]] = None,
     campaign: Optional[Dict[str, Any]] = None,
+    clip_done_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     """Stage 4 & 5: Download needed video sections, slice transcript captions, and render vertical 9:16 shorts."""
     check_cancelled_or_paused(job_id)
@@ -344,7 +355,7 @@ def render_pipeline_moments(
                 except Exception:
                     pass
 
-            generated_clips.append({
+            cached_clip = {
                 "index": i,
                 "filename": os.path.basename(final_path),
                 "path": final_path,
@@ -355,7 +366,9 @@ def render_pipeline_moments(
                 "preview": preview,
                 "word_count": word_count,
                 "transcript": transcript_text,
-            })
+            }
+            generated_clips.append(cached_clip)
+            _notify_clip_done(clip_done_callback, cached_clip)
             continue
 
 
@@ -538,6 +551,7 @@ def render_pipeline_moments(
             logger.warning(f"Could not save clip metadata or captions txt: {e}")
 
         generated_clips.append(clip_dict)
+        _notify_clip_done(clip_done_callback, clip_dict)
         log_job_message(job_id, f"Finished rendering clip {i} of {total} ({os.path.basename(final_path)})")
 
         clip_step(1.0, f"Finished clip {i} of {total}")

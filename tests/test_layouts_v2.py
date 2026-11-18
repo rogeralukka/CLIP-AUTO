@@ -141,3 +141,12 @@ def test_emoji_planner_spaces_out_and_never_repeats_back_to_back():
     starts = [e[0] for e in ev]
     assert all(b - a >= 1.6 - 1e-6 for a, b in zip(starts, starts[1:]))
     assert all(a[2] != b[2] for a, b in zip(ev, ev[1:]))
+
+
+def test_clip_done_callback_errors_never_stop_rendering():
+    from clipper.pipeline import _notify_clip_done
+    got = []
+    _notify_clip_done(got.append, {"path": "a.mp4"})
+    assert got == [{"path": "a.mp4"}]
+    _notify_clip_done(lambda c: 1 / 0, {"path": "b.mp4"})   # must not raise
+    _notify_clip_done(None, {"path": "c.mp4"})

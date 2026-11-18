@@ -4,6 +4,15 @@ This document provides a comprehensive log of all architectural improvements, up
 
 ---
 
+## 2026-11-18 (evening): review page + clips appear as they finish
+
+- **Review:** every moment starts selected (untick what you don't want). Your ticks, start/end
+  nudges and hook titles are saved per run in the browser, so switching tabs or refreshing no
+  longer resets them. Cleared once you press Render.
+- **Render:** each clip is added to Clips the moment it finishes (with its risk check and titles),
+  while the rest keep rendering. The Queue card shows "Open N clips so far", and Clips shows a
+  "still rendering" line and updates by itself. Marking a clip Kept/Rejected mid-render is kept.
+
 ## 2026-11-18 (later still): green-screen streamers, captions on the seams, emojis
 
 - **Green-screen cams (IShowSpeed):** a streamer cut out over the game has no cam border, so the

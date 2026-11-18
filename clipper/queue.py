@@ -506,6 +506,33 @@ def _worker_loop():
             campaign = current_job_data.get("campaign") or {}
             overlay_config = campaign.get("overlay")
 
+            risk_words = campaign.get("risk_words")
+
+            def _build_clip_info(c: Dict[str, Any]) -> Dict[str, Any]:
+                """Risk screen + platform titles/captions for one finished clip."""
+                is_flagged, matched_risks = screen_transcript_for_risks(
+                    c.get("transcript", ""), custom_risk_words=risk_words
+                )
+                meta = generate_clip_metadata(c, campaign=campaign)
+                c_info = dict(c)
+                c_info["is_flagged"] = is_flagged
+                c_info["flagged_words"] = matched_risks
+                c_info["suggested_title"] = meta["title"]
+                c_info["suggested_description"] = meta["description"]
+                c_info["suggested_hashtags"] = meta["hashtags"]
+                c_info["status"] = "PENDING"
+                return c_info
+
+            def _clip_ready(c: Dict[str, Any]):
+                """Each clip lands in Clips the moment it is rendered; the rest keep rendering."""
+                info = _build_clip_info(c)
+
+                def _add(j):
+                    clips = j.setdefault("clips", [])
+                    if not any(x.get("path") == info.get("path") for x in clips):
+                        clips.append(info)
+                mutate_job(next_job_id, _add)
+
             raw_clips = render_pipeline_moments(
                 video_path=video_path,
                 moments=moments_to_render,
@@ -517,31 +544,15 @@ def _worker_loop():
                 progress_callback=job_progress_cb,
                 vod_input=current_job_data.get("vod_input"),
                 campaign=campaign or None,
+                clip_done_callback=_clip_ready,
             )
 
             check_cancelled_or_paused(next_job_id)
 
-            # PHASE 3: Screening Risks & Metadata
+            # PHASE 3: Screening Risks & Metadata (already done clip by clip; this fills any gap)
             update_job_progress(next_job_id, "render", 95, "Screening risk words & generating clip metadata...")
 
-            processed_clips = []
-            risk_words = campaign.get("risk_words")
-
-            for c in raw_clips:
-                transcript = c.get("transcript", "")
-                is_flagged, matched_risks = screen_transcript_for_risks(
-                    transcript, custom_risk_words=risk_words
-                )
-                meta = generate_clip_metadata(c, campaign=campaign)
-
-                c_info = dict(c)
-                c_info["is_flagged"] = is_flagged
-                c_info["flagged_words"] = matched_risks
-                c_info["suggested_title"] = meta["title"]
-                c_info["suggested_description"] = meta["description"]
-                c_info["suggested_hashtags"] = meta["hashtags"]
-                c_info["status"] = "PENDING"
-                processed_clips.append(c_info)
+            processed_clips = [_build_clip_info(c) for c in raw_clips]
 
             # Finalize Job
             def _finish(j):
@@ -554,7 +565,10 @@ def _worker_loop():
                     j["status_message"] = f"Finished! {len(processed_clips)} clips ready for review."
                     j["stage_details"] = "Completed successfully."
                     j["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                    j["clips"] = processed_clips
+                    # Keep what is already there (the person may have kept/rejected a clip while
+                    # the rest rendered); only add clips that never made it in
+                    have = {x.get("path"): x for x in (j.get("clips") or [])}
+                    j["clips"] = [have.get(c.get("path"), c) for c in processed_clips]
 
             mutate_job(next_job_id, _finish)
             logger.info(f"Job {next_job_id} successfully completed ({len(processed_clips)} clips).")

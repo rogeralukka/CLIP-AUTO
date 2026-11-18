@@ -149,7 +149,7 @@ function renderQueue() {
     const camp = j.campaign ? `<span class="chip">${esc(j.campaign.name || j.campaign.id)}</span>` : "";
     const act = [];
     if (j.status === "AWAITING_SELECTION") act.push(`<a class="btn pri sm" href="#review/${j.id}">Review ${(j.detected_moments || []).length} moments</a>`);
-    if (j.status === "COMPLETED" && (j.clips || []).length) act.push(`<a class="btn pri sm" href="#clips/${j.id}">Open ${(j.clips || []).length} clips</a>`);
+    if (["COMPLETED", "RUNNING"].includes(j.status) && (j.clips || []).length) act.push(`<a class="btn pri sm" href="#clips/${j.id}">${j.status === "RUNNING" ? "Open " + (j.clips || []).length + " clips so far" : "Open " + (j.clips || []).length + " clips"}</a>`);
     if (["RUNNING", "QUEUED"].includes(j.status)) act.push(`<button class="btn sm" data-a="pause" data-id="${j.id}">Pause</button>`);
     if (["PAUSED", "INTERRUPTED", "FAILED"].includes(j.status)) act.push(`<button class="btn sm" data-a="resume" data-id="${j.id}">Resume</button>`);
     if (["RUNNING", "QUEUED", "PAUSED", "AWAITING_SELECTION"].includes(j.status)) act.push(`<button class="btn sm ghost danger" data-a="cancel" data-id="${j.id}">Cancel</button>`);
@@ -189,9 +189,24 @@ async function renderReview() {
   const job = S.jobs.find(j => j.id === S.arg);
   if (!job) { main.innerHTML = `<div class="empty"><b>Run not found</b></div>`; return; }
   const moments = (job.detected_moments || []).map(m => ({ ...m }));
-  // Default: pre-select the 8 strongest moments (not just the first 8 in time order)
-  const ranked = moments.map((m, i) => i).sort((a, b) => (moments[b].llm_score ?? moments[b].score ?? 0) - (moments[a].llm_score ?? moments[a].score ?? 0));
-  const sel = new Set(job.selected_indices || ranked.filter(i => !moments[i].weak).slice(0, 8));
+  // Everything starts selected (untick what you don't want). Your ticks, time nudges and hook
+  // titles are remembered per run, so switching tabs or a refresh never throws them away.
+  const draftKey = "clipauto.review." + job.id;
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(draftKey) || "null"); } catch (e) { saved = null; }
+  const sel = new Set(job.selected_indices || moments.map((m, i) => i));
+  if (saved && Array.isArray(saved.sel) && saved.n === moments.length) {
+    sel.clear(); saved.sel.forEach(i => { if (i >= 0 && i < moments.length) sel.add(i); });
+    (saved.edits || []).forEach((ed, i) => { if (ed && moments[i]) Object.assign(moments[i], ed); });
+  }
+  const saveDraft = () => {
+    try {
+      localStorage.setItem(draftKey, JSON.stringify({
+        n: moments.length, sel: [...sel],
+        edits: moments.map(m => ({ start: m.start, end: m.end, hook_title: m.hook_title || "" })),
+      }));
+    } catch (e) { /* storage unavailable: still works, just not remembered */ }
+  };
   const curve = await api(`/api/jobs/${job.id}/curve`).catch(() => ({ composite: [] }));
   const audio = new Audio(); let playing = -1;
   const score = m => (m.blended_score ?? m.score ?? 0);
@@ -246,9 +261,10 @@ async function renderReview() {
     }).join("") || `<div class="empty"><b>No moments found</b>Try "Loose" sensitivity on a new run.</div>`;
     $("#selcount").textContent = `${sel.size} of ${moments.length} selected`;
     $("#render").disabled = !sel.size;
+    saveDraft();
     $$("[data-tog]").forEach(b => b.onclick = () => toggle(+b.dataset.tog));
     $$("[data-play]").forEach(b => b.onclick = () => play(+b.dataset.play));
-    $$("[data-hook]").forEach(inp => inp.oninput = () => moments[+inp.dataset.hook].hook_title = inp.value);
+    $$("[data-hook]").forEach(inp => inp.oninput = () => { moments[+inp.dataset.hook].hook_title = inp.value; saveDraft(); });
     $$("[data-n]").forEach(b => b.onclick = () => { const [i, k, d] = b.dataset.n.split(","); const m = moments[+i]; m[k] = Math.max(0, +m[k] + +d); if (m.end - m.start < 5) m[k] = k === "start" ? m.end - 5 : m.start + 5; drawMoms(); drawCurve(); });
     $$(".mom").forEach(el => el.onmousedown = e => { if (!e.target.closest("button,input")) { S.focus = +el.dataset.i; $$(".mom").forEach(x => x.classList.toggle("focus", x === el)); } });
   };
@@ -265,7 +281,7 @@ async function renderReview() {
   $("#selnone").onclick = () => { sel.clear(); drawMoms(); drawCurve(); };
   $("#render").onclick = async () => {
     audio.pause();
-    try { await api(`/api/jobs/${job.id}/confirm`, { method: "POST", body: { selected: [...sel].sort((a, b) => a - b), moments } }); toast(`Rendering ${sel.size} clips`); location.hash = "#queue"; } catch (e) { toast(e.message, true); }
+    try { await api(`/api/jobs/${job.id}/confirm`, { method: "POST", body: { selected: [...sel].sort((a, b) => a - b), moments } }); try { localStorage.removeItem(draftKey); } catch (e) { /* ignore */ } toast(`Rendering ${sel.size} clips; each one shows up in Clips as soon as it is done`); location.hash = "#queue"; } catch (e) { toast(e.message, true); }
   };
   S.keys = e => {
     if (e.target.matches("input,textarea,select")) return;
@@ -290,6 +306,7 @@ function renderClips() {
     <select id="jobpick" style="width:auto;max-width:280px">${jobs.map(j => `<option value="${j.id}" ${j.id === job.id ? "selected" : ""}>#${j.id} · ${j.clips.length} clips · ${esc((j.campaign || {}).name || platformOf(j.vod_input))}</option>`).join("")}</select>
     <div class="seg" id="filt">${["all", "pending", "kept", "rejected"].map(f => `<button data-f="${f}" class="${S.clipFilter === f ? "on" : ""}">${f}</button>`).join("")}</div>
     <button class="btn pri" id="export" ${kept ? "" : "disabled"}>Export ${kept} kept</button></div>
+  ${job.status === "RUNNING" ? `<p class="small" style="margin:-8px 0 12px;color:var(--ac)">Still rendering: ${esc(job.stage_details || "")} New clips appear here as soon as they are done.</p>` : ""}
   <p class="muted small" style="margin:-8px 0 16px"><span class="kbd">J</span>/<span class="kbd">K</span> move · <span class="kbd">Space</span> play · <span class="kbd">Y</span> keep · <span class="kbd">N</span> reject · <span class="kbd">1</span>–<span class="kbd">4</span> layout</p>
   <div class="clips" id="cliplist"></div>`;
   $("#jobpick").onchange = e => location.hash = "#clips/" + e.target.value;
@@ -357,8 +374,10 @@ async function rerender(job, i, el) {
 function renderClipsKeepScroll() { const y = main.scrollTop; renderClips(); main.scrollTop = y; }
 let lastClipSig = "";
 function updateClipsLive() {
-  const job = S.jobs.find(j => j.id === S.arg); if (!job) return;
-  const sig = job.clips.map(c => `${c.busy}|${c.rendered_at}|${c.status}`).join(",");
+  const jobs = clipJobs();
+  const job = jobs.find(j => j.id === S.arg);
+  if (!job) { if (jobs.length && !document.activeElement.matches("input")) renderClips(); return; }
+  const sig = job.status + "|" + job.clips.map(c => `${c.busy}|${c.rendered_at}|${c.status}`).join(",");
   if (lastClipSig && sig !== lastClipSig && !document.activeElement.matches("input")) renderClipsKeepScroll();
   lastClipSig = sig;
 }
