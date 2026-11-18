@@ -52,7 +52,9 @@ polish:
   hook_duration_seconds: 2.5
   enhance: "light"               # light denoise + sharpen on every clip ("off" to disable)
   ai_upscale_cams: "auto"        # AI-sharpen small cam crops with Real-ESRGAN when installed (setup_upscaler.ps1); "off" to disable
-  ai_upscale_min_factor: 1.6     # only when the cam is blown up at least this much
+  ai_upscale_min_factor: 1.15    # AI-sharpen when the cam is enlarged at least this much
+  cam_max_upscale: 1.5           # a cam is shown WHOLE and enlarged at most this much (more looks chopped/soft)
+  cam_max_upscale_ai: 2.2        # same, when Real-ESRGAN is installed
   ai_upscale_model: "realesrgan-x4plus"
   loudnorm:
     enabled: true

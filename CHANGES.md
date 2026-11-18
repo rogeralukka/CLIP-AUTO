@@ -4,6 +4,17 @@ This document provides a comprehensive log of all architectural improvements, up
 
 ---
 
+## 2026-11-18 (later): cams shown whole, not chopped
+
+- Cams were cropped to a narrow slice inside their rectangle and stretched 2-3x to fill the
+  band, which looked like 144p. Now the **whole cam picture** is shown, enlarged at most 1.5x
+  (`polish.cam_max_upscale`; 2.2x when Real-ESRGAN is installed), centred over a blurred copy
+  of itself. The cam band is only as tall as the cam needs, so the game gets the rest (taller,
+  closer to native size). Two cams: each 540 wide, whole.
+- Green-screen cams (person cut out, no rectangle): head-and-shoulders area around the face,
+  generous, never a face-only crop. (Cutting the person out of the background is not done.)
+- Real-ESRGAN now kicks in from 1.15x enlargement.
+
 ## 2026-11-18: real 1080p downloads, real cam outlines, two-cam layout
 
 Checked on Master's own runs (Kai + Speed co-op stream, PewDiePie Detroit stream, Speed + MrBeast IRL stream).

@@ -921,3 +921,44 @@ def gameplay_crop_avoiding(frame_w: int, frame_h: int, avoid: List[Tuple[int, in
     cw = min(frame_w, int(frame_h * aspect))
     ch = min(frame_h, int(cw / aspect))
     return ((frame_w - cw) // 2, (frame_h - ch) // 2, cw, ch)
+
+
+# --------------------------------------------------------------------------- cam tiles
+def cam_region(info: Optional[Dict[str, Any]], cam: Optional[Dict[str, Any]],
+               frame_w: int, frame_h: int) -> Tuple[int, int, int, int]:
+    """The area to show for a facecam: the WHOLE cam rectangle when its outline was found.
+
+    No outline (green-screen cam: just the person cut out over the game, or a cam found by
+    its face only): head and shoulders around the face, generous enough that the person is
+    not chopped, never a tight face crop.
+    """
+    if cam and cam.get("rect"):
+        return tuple(int(v) for v in cam["rect"])  # type: ignore[return-value]
+    fb = (cam or {}).get("face_box") or (info or {}).get("face_box")
+    if not fb:
+        w, h = int(frame_w * 0.28), int(frame_h * 0.35)
+        return (max(0, frame_w - w), 0, w, h)
+    fx, fy, fw, fh = fb
+    w = int(min(frame_w, max(fw * 3.4, frame_w * 0.16)))
+    h = int(min(frame_h, w * 0.9))
+    x = int(round(fx + fw / 2.0 - w / 2.0))
+    y = int(round(fy - fh * 0.9))
+    x = max(0, min(frame_w - w, x))
+    y = max(0, min(frame_h - h, y))
+    return (x - x % 2, y - y % 2, w - w % 2, h - h % 2)
+
+
+def cam_tile_geometry(rect: Tuple[int, int, int, int], cell_w: int, max_h: int,
+                      max_scale: float) -> Tuple[int, int, float]:
+    """Size to show a cam at: its WHOLE picture, enlarged at most `max_scale` times.
+
+    A cam is a small picture in the stream (often ~470x260 px even in 1080p). Stretching a
+    slice of it to fill a phone-wide tile (2-3x) is what made cams look like 144p. Instead
+    the whole cam is shown at a capped zoom (the rest of the tile is a blurred copy of it).
+    Returns (tile_w, tile_h, scale).
+    """
+    _, _, w, h = rect
+    s = min(cell_w / max(1.0, w), max_h / max(1.0, h), max_scale)
+    tw = max(2, int(round(w * s)))
+    th = max(2, int(round(h * s)))
+    return tw - tw % 2, th - th % 2, s

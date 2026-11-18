@@ -13,6 +13,8 @@ from clipper.facecam import (  # noqa: E402
     find_panel_around,
     fit_crop_in_panel,
     gameplay_crop_avoiding,
+    cam_region,
+    cam_tile_geometry,
     resolve_layout,
 )
 from clipper.transcription import collapse_repeats  # noqa: E402
@@ -73,6 +75,23 @@ class TestLayoutsV2(unittest.TestCase):
         self.assertLessEqual(c[0] + c[2], panel[0] + panel[2])
         self.assertLessEqual(c[1] + c[3], panel[1] + panel[3])
         self.assertAlmostEqual(c[2] / c[3], 540 / 768, delta=0.02)
+
+    def test_cam_shown_whole_with_capped_zoom(self):
+        # a 465x261 cam in a 540-wide cell: shown whole (not a narrow slice stretched 3x)
+        tw, th, sc = cam_tile_geometry((1452, 0, 465, 261), 540, 700, 1.5)
+        self.assertEqual((tw, th), (540, 302))
+        self.assertLessEqual(sc, 1.5)
+        # a small cam is never enlarged past the cap, even if the cell is much wider
+        tw, th, sc = cam_tile_geometry((0, 0, 300, 200), 1080, 800, 1.5)
+        self.assertLessEqual(tw, 452)
+        self.assertAlmostEqual(tw / th, 300 / 200, delta=0.02)
+
+    def test_green_screen_region_is_generous(self):
+        info = {"face_box": (100, 80, 90, 90)}
+        x, y, w, h = cam_region(info, None, 1920, 1080)
+        self.assertGreaterEqual(w, 300)          # head and shoulders, not a face crop
+        self.assertTrue(x <= 100 and x + w >= 190 and y <= 80 and y + h >= 170)
+        self.assertEqual(cam_region(None, {"rect": (10, 20, 400, 300)}, 1920, 1080), (10, 20, 400, 300))
 
     def test_collapse_repeats(self):
         words = [{"word": w} for w in ("I know what it is. " * 8 + "oh oh oh oh oh oh okay").split()]

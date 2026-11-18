@@ -10,8 +10,7 @@ import numpy as np
 from .captions import escape_ffmpeg_ass_path
 from .config import load_config
 from .upscale import needs_upscale, upscale_crop_video, upscale_enabled
-from .facecam import (detect_facecam, expand_box_with_padding, fit_crop_in_panel,
-                      gameplay_crop_avoiding)
+from .facecam import (cam_region, cam_tile_geometry, detect_facecam, gameplay_crop_avoiding)
 from .process_manager import check_cancelled_or_paused, run_tracked_command
 from .utils import get_ffmpeg_path
 
@@ -304,79 +303,77 @@ def render_vertical_clip(
     if active_layout == "duo" and len(cams) < 2:
         active_layout = "split"
 
-    # Extra inputs (AI-sharpened cam crops) go after the clip itself
+    # Extra inputs (AI-sharpened cam pictures) go after the clip itself
     extra_inputs: List[str] = []
+    pol_cfg = load_config().get("polish", {})
+    ai_on = upscale_enabled()
+    # Cam pictures are shown whole and enlarged at most this much (more looks soft/chopped)
+    cam_max_scale = float(pol_cfg.get("cam_max_upscale_ai" if ai_on else "cam_max_upscale", 2.2 if ai_on else 1.5))
 
-    def cam_stream(label: str, crop: Tuple[int, int, int, int], out_w: int, out_h: int, tag: str) -> str:
-        """Filter for one cam tile: AI-sharpened copy when available, else a plain crop+scale."""
-        cx, cy, cw, ch = crop
-        if upscale_enabled() and needs_upscale(cw, ch, out_w, out_h):
-            up = upscale_crop_video(abs_rough, crop, out_w, out_h,
+    def cam_tile(src_label: str, bg_label: str, rect: Tuple[int, int, int, int], cell_w: int,
+                 band_h: int, max_h: int, tag: str, out: str) -> Tuple[List[str], str, int, int]:
+        """Filters that make one cam tile: the WHOLE cam at a capped zoom, centred over a
+        blurred copy of itself that fills the cell. Returns (filters, "ai"|"src", tile_w, tile_h)."""
+        x, y, w, h = rect
+        tw, th, _ = cam_tile_geometry(rect, cell_w, max_h, cam_max_scale)
+        sw, sh = max(2, cell_w // 6), max(2, band_h // 6)
+        parts = [
+            f"[{bg_label}] crop={w}:{h}:{x}:{y},scale={sw}:{sh}:force_original_aspect_ratio=increase,"
+            f"crop={sw}:{sh},gblur=sigma=5,eq=brightness=-0.12,scale={cell_w}:{band_h}:flags=bicubic,setsar=1 [{out}_bg]"
+        ]
+        fg = None
+        if ai_on and needs_upscale(w, h, tw, th):
+            up = upscale_crop_video(abs_rough, rect, tw, th,
                                     os.path.splitext(abs_out)[0] + f"_{tag}_ai.mp4", job_id=job_id)
             if up:
                 extra_inputs.extend(["-i", up])
-                idx = len(extra_inputs) // 2
-                return f"[{idx}:v] setsar=1 [{label}]"
-        return None  # type: ignore[return-value]
-
-    if active_layout == "split":
-        # Facecam + gameplay. The 9:16 frame is split into 10 bands: the top and bottom
-        # band hold the hook / captions over a blurred fill, the middle 8 are two
-        # 1080x768 halves (cam on top, gameplay below). Less upscaling than a 50/50 split
-        # of the full height, so both halves stay sharp.
-        band = 192
-        half = (1920 - 2 * band) // 2  # 768
-        if cams:
-            # The cam's real outline: crop INSIDE it, so no game leaks into the cam band
-            cam = cams[0]
-            fx, fy, fw, fh = fit_crop_in_panel(tuple(cam["rect"]), tuple(cam["face_box"]) if cam.get("face_box") else None,
-                                               1080.0 / half)
-            avoid = [tuple(c["rect"]) for c in cams]
+                fg = f"[{len(extra_inputs) // 2}:v] setsar=1 [{out}_fg]"
+        if fg is None:
+            parts.append(f"[{src_label}] crop={w}:{h}:{x}:{y},scale={tw}:{th}:{L},setsar=1 [{out}_fg]")
         else:
-            padded_box = facecam_info.get("padded_box") if facecam_info else None
-            if padded_box:
-                fx, fy, fw, fh = padded_box
-            else:
-                fw, fh = int(src_w * 0.28), int(src_h * 0.35)
-                fx, fy = max(0, src_w - fw), 0
-            # Re-fit the cam box to the half's aspect so nothing gets squashed
-            fx, fy, fw, fh = expand_box_with_padding((fx, fy, fw, fh), src_w, src_h, padding=0.0,
-                                                     target_aspect=1080.0 / half)
-            avoid = [(fx, fy, fw, fh)]
-        gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, avoid, 1080.0 / half)
+            parts.append(fg)
+        parts.append(f"[{out}_bg][{out}_fg] overlay=(W-w)/2:(H-h)/2 [{out}]")
+        return parts, ("ai" if fg else "src"), tw, th
 
-        ai_cam = cam_stream("top_face", (fx, fy, fw, fh), 1080, half, "cam")
+    TOP, MID = 192, 1536   # hook band; the 8 middle bands (the last 192 is the caption band)
+    if active_layout == "split":
+        # Facecam + gameplay: the whole cam (capped zoom) on top, the game below it, hook in the
+        # top band and captions in the bottom band so neither covers the cam or the game.
+        cam = cams[0] if cams else None
+        rect = cam_region(facecam_info, cam, src_w, src_h)
+        _, th0, _ = cam_tile_geometry(rect, 1080, 800, cam_max_scale)
+        cam_h = max(360, min(800, th0))
+        game_h = MID - cam_h
+        gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, [rect], 1080.0 / game_h)
+        tile, kind, tw, th = cam_tile("c0", "c1", rect, 1080, cam_h, 800, "cam", "camt")
+        uses = ["[s_bg]", "[s_game]"] + ([] if kind == "ai" else ["[c0]"]) + ["[c1]"]
         filter_parts.append(
-            ("[0:v] split=2 [s_bg][s_game]; " if ai_cam else "[0:v] split=3 [s_bg][s_cam][s_game]; ")
-            + f"[s_bg] {BG} [bg]; "
-            + (f"{ai_cam}; " if ai_cam else
-               f"[s_cam] crop={fw}:{fh}:{fx}:{fy},scale=1080:{half}:force_original_aspect_ratio=increase:{L},crop=1080:{half},setsar=1 [top_face]; ") +
-            f"[s_game] crop={gw}:{gh}:{gx}:{gy},scale=1080:{half}:force_original_aspect_ratio=increase:{L},crop=1080:{half},setsar=1 [bot_game]; "
-            f"[bg][top_face] overlay=0:{band} [b1]; [b1][bot_game] overlay=0:{band + half} [v_base]"
+            f"[0:v] split={len(uses)} {''.join(uses)}; "
+            f"[s_bg] {BG} [bg]; " + "; ".join(tile) + "; "
+            f"[s_game] crop={gw}:{gh}:{gx}:{gy},scale=1080:{game_h}:force_original_aspect_ratio=increase:{L},crop=1080:{game_h},setsar=1 [bot_game]; "
+            f"[bg][camt] overlay=0:{TOP} [b1]; [b1][bot_game] overlay=0:{TOP + cam_h} [v_base]"
         )
+        logger.info(f"Split: cam {rect} shown whole at {tw}x{th} (x{tw / max(1, rect[2]):.2f}), game {1080}x{game_h}")
     elif active_layout == "duo":
-        # Two streamers (co-op): both cams side by side in the top half, each 540x768,
-        # the game in the bottom half (crop that leaves both cams out).
-        band = 192
-        half = (1920 - 2 * band) // 2  # 768
+        # Two streamers (co-op): both whole cams side by side (540 wide each), game below.
         a, b = sorted(cams[:2], key=lambda c: c["rect"][0])
-        ax, ay, aw, ah = fit_crop_in_panel(tuple(a["rect"]), tuple(a["face_box"]) if a.get("face_box") else None, 540.0 / half)
-        bx, by, bw, bh = fit_crop_in_panel(tuple(b["rect"]), tuple(b["face_box"]) if b.get("face_box") else None, 540.0 / half)
-        gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, [tuple(c["rect"]) for c in cams], 1080.0 / half)
-        ai_a = cam_stream("cam_a", (ax, ay, aw, ah), 540, half, "cam_a")
-        ai_b = cam_stream("cam_b", (bx, by, bw, bh), 540, half, "cam_b")
-        outs = ["[s_bg]", "[s_game]"] + ([] if ai_a else ["[s_a]"]) + ([] if ai_b else ["[s_b]"])
+        ra, rb = tuple(a["rect"]), tuple(b["rect"])
+        th_a = cam_tile_geometry(ra, 540, 700, cam_max_scale)[1]
+        th_b = cam_tile_geometry(rb, 540, 700, cam_max_scale)[1]
+        cam_h = max(300, min(700, max(th_a, th_b)))
+        game_h = MID - cam_h
+        gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, [ra, rb], 1080.0 / game_h)
+        ta, ka, taw, tah = cam_tile("a0", "a1", ra, 540, cam_h, 700, "cam_a", "cama")
+        tb, kb, tbw, tbh = cam_tile("b0", "b1", rb, 540, cam_h, 700, "cam_b", "camb")
+        uses = ["[s_bg]", "[s_game]"] + ([] if ka == "ai" else ["[a0]"]) + ["[a1]"] + ([] if kb == "ai" else ["[b0]"]) + ["[b1]"]
         filter_parts.append(
-            f"[0:v] split={len(outs)} {''.join(outs)}; "
-            f"[s_bg] {BG} [bg]; "
-            + (f"{ai_a}; " if ai_a else
-               f"[s_a] crop={aw}:{ah}:{ax}:{ay},scale=540:{half}:force_original_aspect_ratio=increase:{L},crop=540:{half},setsar=1 [cam_a]; ")
-            + (f"{ai_b}; " if ai_b else
-               f"[s_b] crop={bw}:{bh}:{bx}:{by},scale=540:{half}:force_original_aspect_ratio=increase:{L},crop=540:{half},setsar=1 [cam_b]; ") +
-            f"[s_game] crop={gw}:{gh}:{gx}:{gy},scale=1080:{half}:force_original_aspect_ratio=increase:{L},crop=1080:{half},setsar=1 [bot_game]; "
-            f"[bg][cam_a] overlay=0:{band} [b1]; [b1][cam_b] overlay=540:{band} [b2]; "
-            f"[b2][bot_game] overlay=0:{band + half} [v_base]"
+            f"[0:v] split={len(uses)} {''.join(uses)}; "
+            f"[s_bg] {BG} [bg]; " + "; ".join(ta) + "; " + "; ".join(tb) + "; "
+            f"[s_game] crop={gw}:{gh}:{gx}:{gy},scale=1080:{game_h}:force_original_aspect_ratio=increase:{L},crop=1080:{game_h},setsar=1 [bot_game]; "
+            f"[bg][cama] overlay=0:{TOP} [m1]; [m1][camb] overlay=540:{TOP} [m2]; "
+            f"[m2][bot_game] overlay=0:{TOP + cam_h} [v_base]"
         )
+        logger.info(f"Duo: cams shown whole at {taw}x{tah} and {tbw}x{tbh}, game 1080x{game_h}")
     elif active_layout in ("irl", "face") and (facecam_info or {}).get("track"):
         # Moving 9:16 window that follows the main person (IRL / camera streams)
         crop_h = src_h

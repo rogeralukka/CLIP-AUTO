@@ -43,7 +43,7 @@ def upscale_enabled() -> bool:
 def needs_upscale(crop_w: int, crop_h: int, out_w: int, out_h: int) -> bool:
     """Only worth it when the crop is blown up a lot."""
     factor = max(out_w / max(1, crop_w), out_h / max(1, crop_h))
-    return factor >= float(load_config().get("polish", {}).get("ai_upscale_min_factor", 1.6))
+    return factor >= float(load_config().get("polish", {}).get("ai_upscale_min_factor", 1.15))
 
 
 def upscale_crop_video(src: str, crop: Tuple[int, int, int, int], out_w: int, out_h: int,
