@@ -29,6 +29,7 @@ from .transcription import transcribe_clip
 from .utils import get_ffmpeg_path
 
 logger = logging.getLogger("clipper.live")
+_gpu_lock = threading.Lock()
 
 
 class TwitchChatListener(threading.Thread):
@@ -354,158 +355,160 @@ class LiveStreamClipper:
         preset = load_preset(self.preset_name)
 
         for m in new_moments:
-            start_s = m["start"]
-            end_s = m["end"]
-            dur = end_s - start_s
-            ts_str = datetime.datetime.now().strftime("%H%M%S")
-            clip_base = f"live_{ts_str}_{int(start_s)}s"
+            with _gpu_lock:
+                start_s = m["start"]
+                end_s = m["end"]
+                dur = end_s - start_s
+                ts_str = datetime.datetime.now().strftime("%H%M%S")
+                clean_id = re.sub(r"[^a-zA-Z0-9_]", "", self.stream_id)[:8]
+                clip_base = f"live_{clean_id}_{ts_str}_{int(start_s)}s"
 
-            rough_path = os.path.join(self.output_dir, f"rough_{clip_base}.mp4")
-            ass_path = os.path.join(self.output_dir, f"cap_{clip_base}.ass")
-            final_path = os.path.join(self.output_dir, f"{clip_base}.mp4")
+                rough_path = os.path.join(self.output_dir, f"rough_{clip_base}.mp4")
+                ass_path = os.path.join(self.output_dir, f"cap_{clip_base}.ass")
+                final_path = os.path.join(self.output_dir, f"{clip_base}.mp4")
 
-            # Cut rough clip
-            self._set_state("cutting", f"Extracting audio/video moment at {int(start_s)}s ({int(dur)}s)...")
-            cut_rough_clip(self.buffer_file, start_s, end_s, rough_path, use_cpu=self.use_cpu)
+                # Cut rough clip
+                self._set_state("cutting", f"Extracting audio/video moment at {int(start_s)}s ({int(dur)}s)...")
+                cut_rough_clip(self.buffer_file, start_s, end_s, rough_path, use_cpu=self.use_cpu)
 
-            # Transcribe
-            self._set_state("transcribing", f"Transcribing candidate moment at {int(start_s)}s with Whisper...")
-            words = transcribe_clip(rough_path, use_cpu=self.use_cpu, cache_dir=self.output_dir)
-            transcript_text = " ".join(w[2] for w in words).strip()
+                # Transcribe
+                self._set_state("transcribing", f"Transcribing candidate moment at {int(start_s)}s with Whisper...")
+                words = transcribe_clip(rough_path, use_cpu=self.use_cpu, cache_dir=self.output_dir)
+                transcript_text = " ".join(w[2] for w in words).strip()
 
-            # AI Viral Judge Evaluation (Ollama Qwen):
-            # Only render if LLM confirms this clip has a standalone story & payoff
-            hook_title = None
-            cfg = load_config()
-            llm_cfg = cfg.get("llm", {})
-            if llm_cfg.get("enabled", True):
-                try:
-                    from .judge import is_ollama_available, judge_single_moment
-                    from .transcription import unload_whisper_model
-                    endpoint = llm_cfg.get("endpoint", "http://localhost:11434")
-                    model_name = llm_cfg.get("model", "qwen3:14b")
-                    avail, _ = is_ollama_available(endpoint)
-                    if avail:
-                        self._set_state("judging", f"AI Judge evaluating virality at {int(start_s)}s (Qwen 14B)...")
-                        unload_whisper_model()
-                        chat_sample = []
-                        if self.chat is not None:
-                            chat_sample = [c.get("message", "") for c in self.chat.comments_between(start_s, end_s)]
-                        eval_res = judge_single_moment(
-                            moment=m,
-                            transcript=transcript_text,
-                            chat_sample=chat_sample,
-                            endpoint=endpoint,
-                            model=model_name,
-                        )
-                        if eval_res:
-                            score = float(eval_res.get("score", 5.0))
-                            standalone = eval_res.get("standalone", True)
-                            payoff = eval_res.get("payoff_inside", True)
-                            # Balanced viral filter: reject true hollow moments (< 4.5) or
-                            # moments below 5.5 that lack an internal payoff/punchline.
-                            if score < 4.5 or (score < 5.5 and not payoff):
-                                reason = eval_res.get('reason') or "Lacks clear punchline or standalone context"
-                                logger.info(f"AI Judge rejected hollow moment at t={start_s:.1f}s (score={score:.1f}/10, standalone={standalone}, payoff={payoff}, reason: {reason})")
-                                self._record_event("judge_reject", f"AI Judge rejected moment at {int(start_s)}s (Score {score:.1f}/10)", score=score, reason=reason)
-                                self._set_state("idle", f"Rejected hollow moment at {int(start_s)}s (Score {score:.1f}/10). Resuming monitoring...")
-                                try:
-                                    if os.path.isfile(rough_path):
-                                        os.remove(rough_path)
-                                except OSError:
-                                    pass
-                                continue
-                            if eval_res.get("hook_title"):
-                                hook_title = eval_res["hook_title"]
-                            m["score"] = score
-                            self._record_event("judge_approve", f"AI Judge approved viral moment at {int(start_s)}s (Score {score:.1f}/10: '{hook_title}')", score=score)
-                            logger.info(f"AI Judge approved viral moment at t={start_s:.1f}s (score={score:.1f}/10, hook='{hook_title}')")
-                except Exception as e:
-                    logger.warning(f"Live LLM Judge evaluation failed, falling back: {e}")
+                # AI Viral Judge Evaluation (Ollama Qwen):
+                # Only render if LLM confirms this clip has a standalone story & payoff
+                hook_title = None
+                cfg = load_config()
+                llm_cfg = cfg.get("llm", {})
+                if llm_cfg.get("enabled", True):
+                    try:
+                        from .judge import is_ollama_available, judge_single_moment
+                        from .transcription import unload_whisper_model
+                        endpoint = llm_cfg.get("endpoint", "http://localhost:11434")
+                        model_name = llm_cfg.get("model", "qwen3:14b")
+                        avail, _ = is_ollama_available(endpoint)
+                        if avail:
+                            self._set_state("judging", f"AI Judge evaluating virality at {int(start_s)}s (Qwen 14B)...")
+                            unload_whisper_model()
+                            chat_sample = []
+                            if self.chat is not None:
+                                chat_sample = [c.get("message", "") for c in self.chat.comments_between(start_s, end_s)]
+                            eval_res = judge_single_moment(
+                                moment=m,
+                                transcript=transcript_text,
+                                chat_sample=chat_sample,
+                                endpoint=endpoint,
+                                model=model_name,
+                            )
+                            if eval_res:
+                                score = float(eval_res.get("score", 5.0))
+                                standalone = eval_res.get("standalone", True)
+                                payoff = eval_res.get("payoff_inside", True)
+                                # Balanced viral filter: reject true hollow moments (< 4.5) or
+                                # moments below 5.5 that lack an internal payoff/punchline.
+                                if score < 4.5 or (score < 5.5 and not payoff):
+                                    reason = eval_res.get('reason') or "Lacks clear punchline or standalone context"
+                                    logger.info(f"AI Judge rejected hollow moment at t={start_s:.1f}s (score={score:.1f}/10, standalone={standalone}, payoff={payoff}, reason: {reason})")
+                                    self._record_event("judge_reject", f"AI Judge rejected moment at {int(start_s)}s (Score {score:.1f}/10)", score=score, reason=reason)
+                                    self._set_state("idle", f"Rejected hollow moment at {int(start_s)}s (Score {score:.1f}/10). Resuming monitoring...")
+                                    try:
+                                        if os.path.isfile(rough_path):
+                                            os.remove(rough_path)
+                                    except OSError:
+                                        pass
+                                    continue
+                                if eval_res.get("hook_title"):
+                                    hook_title = eval_res["hook_title"]
+                                m["score"] = score
+                                self._record_event("judge_approve", f"AI Judge approved viral moment at {int(start_s)}s (Score {score:.1f}/10: '{hook_title}')", score=score)
+                                logger.info(f"AI Judge approved viral moment at t={start_s:.1f}s (score={score:.1f}/10, hook='{hook_title}')")
+                    except Exception as e:
+                        logger.warning(f"Live LLM Judge evaluation failed, falling back: {e}")
 
-            # Facecam layout: same checks as a normal run (cutout/green-screen cams, two cams,
-            # stream-wide cam memory)
-            facecam = detect_facecam(rough_path, known_cams=self.known_cams)
-            self._remember_cams(facecam)
-            layout, layout_note = resolve_layout("auto", facecam)
+                # Facecam layout: same checks as a normal run (cutout/green-screen cams, two cams,
+                # stream-wide cam memory)
+                facecam = detect_facecam(rough_path, known_cams=self.known_cams)
+                self._remember_cams(facecam)
+                layout, layout_note = resolve_layout("auto", facecam)
 
-            # Hook title & ASS
-            if not hook_title:
-                hook_title = extract_hook_phrase(words)
-            make_ass(words, ass_path, preset=preset, layout=layout, hook_title=hook_title,
-                     caption_y=caption_anchor_y(layout, facecam))
+                # Hook title & ASS
+                if not hook_title:
+                    hook_title = extract_hook_phrase(words)
+                make_ass(words, ass_path, preset=preset, layout=layout, hook_title=hook_title,
+                         caption_y=caption_anchor_y(layout, facecam))
 
-            # Render vertical 9:16
-            self._set_state("rendering", f"Rendering vertical 9:16 clip '{hook_title}' ({int(dur)}s)...")
-            render_vertical_clip(
-                rough_path,
-                ass_path,
-                final_path,
-                use_cpu=self.use_cpu,
-                layout=layout,
-                facecam_info=facecam,
-            )
-
-            # QC and metadata
-            transcript_text = " ".join(w[2] for w in words)
-            qc = perform_qc_check(
-                final_path,
-                duration=dur,
-                campaign=self.campaign,
-                facecam_info=facecam,
-                word_count=len(words),
-                layout=layout,
-            )
-            platform_meta = generate_platform_metadata(
-                hook_title=hook_title,
-                transcript=transcript_text,
-                campaign=self.campaign,
-            )
-
-            meta_file = os.path.join(self.output_dir, f"{clip_base}_metadata.json")
-            captions_file = os.path.join(self.output_dir, f"{clip_base}_captions.txt")
-
-            clip_meta = {
-                "timestamp": ts_str,
-                "filename": os.path.basename(final_path),
-                "path": final_path,
-                "start_seconds": start_s,
-                "end_seconds": end_s,
-                "duration": round(dur, 2),
-                "hype_score": m.get("score", 0.0),
-                "hook_title": hook_title,
-                "layout": layout,
-                "layout_note": layout_note,
-                "facecam": facecam,
-                "qc": qc,
-                "platforms": platform_meta,
-                # kept so the clip can be re-rendered if a later look finds a cam this one missed
-                "index": len(self.clips_done) + 1,
-                "rough_path": rough_path,
-                "ass_path": ass_path,
-                "transcript": transcript_text,
-                "preset": self.preset_name,
-                "meta_path": meta_file,
-            }
-
-            with open(meta_file, "w", encoding="utf-8") as f:
-                json.dump(clip_meta, f, indent=2)
-
-            with open(captions_file, "w", encoding="utf-8") as f:
-                f.write(
-                    f"=== {hook_title} ===\n\n"
-                    f"--- YOUTUBE SHORTS ---\nTitle: {platform_meta['youtube_title']}\n\n{platform_meta['youtube_description']}\n\n"
-                    f"--- TIKTOK ---\n{platform_meta['tiktok_caption']}\n\n"
-                    f"--- INSTAGRAM REELS ---\n{platform_meta['reels_caption']}\n\n"
-                    f"--- X (TWITTER) ---\n{platform_meta['x_tweet']}\n"
+                # Render vertical 9:16
+                self._set_state("rendering", f"Rendering vertical 9:16 clip '{hook_title}' ({int(dur)}s)...")
+                render_vertical_clip(
+                    rough_path,
+                    ass_path,
+                    final_path,
+                    use_cpu=self.use_cpu,
+                    layout=layout,
+                    facecam_info=facecam,
                 )
 
-            from .signals import record_clipped_moment
-            record_clipped_moment(self.live_vod_id, start_s, end_s, m.get("score", 0.0))
-            logger.info(f"Exported live clip -> {final_path} (QC: {qc['status']})")
-            self._record_event("rendered", f"Exported vertical clip '{hook_title}' ({round(dur, 1)}s, QC: {qc['status']})", score=m.get("score"))
-            rendered_clips.append(clip_meta)
-            self.clips_done.append(clip_meta)
+                # QC and metadata
+                transcript_text = " ".join(w[2] for w in words)
+                qc = perform_qc_check(
+                    final_path,
+                    duration=dur,
+                    campaign=self.campaign,
+                    facecam_info=facecam,
+                    word_count=len(words),
+                    layout=layout,
+                )
+                platform_meta = generate_platform_metadata(
+                    hook_title=hook_title,
+                    transcript=transcript_text,
+                    campaign=self.campaign,
+                )
+
+                meta_file = os.path.join(self.output_dir, f"{clip_base}_metadata.json")
+                captions_file = os.path.join(self.output_dir, f"{clip_base}_captions.txt")
+
+                clip_meta = {
+                    "timestamp": ts_str,
+                    "filename": os.path.basename(final_path),
+                    "path": final_path,
+                    "start_seconds": start_s,
+                    "end_seconds": end_s,
+                    "duration": round(dur, 2),
+                    "hype_score": m.get("score", 0.0),
+                    "hook_title": hook_title,
+                    "layout": layout,
+                    "layout_note": layout_note,
+                    "facecam": facecam,
+                    "qc": qc,
+                    "platforms": platform_meta,
+                    # kept so the clip can be re-rendered if a later look finds a cam this one missed
+                    "index": len(self.clips_done) + 1,
+                    "rough_path": rough_path,
+                    "ass_path": ass_path,
+                    "transcript": transcript_text,
+                    "preset": self.preset_name,
+                    "meta_path": meta_file,
+                }
+
+                with open(meta_file, "w", encoding="utf-8") as f:
+                    json.dump(clip_meta, f, indent=2)
+
+                with open(captions_file, "w", encoding="utf-8") as f:
+                    f.write(
+                        f"=== {hook_title} ===\n\n"
+                        f"--- YOUTUBE SHORTS ---\nTitle: {platform_meta['youtube_title']}\n\n{platform_meta['youtube_description']}\n\n"
+                        f"--- TIKTOK ---\n{platform_meta['tiktok_caption']}\n\n"
+                        f"--- INSTAGRAM REELS ---\n{platform_meta['reels_caption']}\n\n"
+                        f"--- X (TWITTER) ---\n{platform_meta['x_tweet']}\n"
+                    )
+
+                from .signals import record_clipped_moment
+                record_clipped_moment(self.live_vod_id, start_s, end_s, m.get("score", 0.0))
+                logger.info(f"Exported live clip -> {final_path} (QC: {qc['status']})")
+                self._record_event("rendered", f"Exported vertical clip '{hook_title}' ({round(dur, 1)}s, QC: {qc['status']})", score=m.get("score"))
+                rendered_clips.append(clip_meta)
+                self.clips_done.append(clip_meta)
 
         self._set_state("idle", f"Analyzed to {int(end_offset)}s. Listening for new moments at live edge...")
         self._second_look()
