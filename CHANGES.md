@@ -375,3 +375,8 @@ Problems found on the first real run and what changed:
 - **Framed layout (new default for one-picture streams).** The whole 16:9 picture sits in the middle band, on top of a blurred copy of itself filling the screen. Nothing is stretched. Hook goes above the picture, captions below. Follow / Face crops are still one click away per clip.
 - **Split layout redone.** 10 bands: top and bottom band hold the hook and captions over a blurred fill; the middle 8 bands are two 1080x768 halves (cam, then gameplay). The gameplay crop keeps away from the cam corner.
 - **Quality.** Sections download the best stream up to the chosen height (VP9/AV1 allowed, HDR avoided) and the exact-cut re-encode is near-lossless (was ffmpeg's default CRF 23). The rough cut is near-lossless too. Lanczos scaling, gentle denoise + sharpen (`polish.enhance: light`, set `off` to disable), and high-quality NVENC (VBR CQ 19, spatial/temporal AQ, lookahead) for the final clip.
+
+## Night 5 - small cams + captions
+- **Small-face pass** (`facecam.fine_face_pass`): scans a few frames in small tiles so webcam faces of ~70-150 px (Speed's panel cam) are seen; then re-checks every sample around those spots. Used by normal runs and Live.
+- **Cam choice**: among the faces that stay put, a still, small, near-edge, always-present one now wins over a game character's face.
+- **Captions**: font 88 -> 66, hook 92 -> 72, 22 chars per line. In a single-picture (Framed) clip they sit in the blurred band just under the picture (y 1400) instead of across the action. Cam layouts keep the seam position.

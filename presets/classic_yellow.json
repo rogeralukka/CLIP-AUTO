@@ -2,7 +2,7 @@
   "name": "classic_yellow",
   "description": "Bold yellow karaoke highlight on white text with strong black outline",
   "font_name": "Arial Black",
-  "font_size": 88,
+  "font_size": 66,
   "primary_colour": "&H0000FFFF",
   "secondary_colour": "&H00FFFFFF",
   "outline_colour": "&H00000000",

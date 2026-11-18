@@ -298,7 +298,11 @@ def caption_anchor_y(layout: str, facecam_info: Optional[Dict[str, Any]]) -> int
     cam_h = plan_cam_band(layout, facecam_info)
     if cam_h is not None:
         return TOP_BAND + cam_h
-    return 1080
+    if layout in ("gameplay", "auto"):
+        # Framed picture (16:9 in the middle): captions go in the blurred band just under it,
+        # never over the action
+        return 1400
+    return 1500
 
 
 def render_vertical_clip(

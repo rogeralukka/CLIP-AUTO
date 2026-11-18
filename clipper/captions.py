@@ -10,14 +10,14 @@ logger = logging.getLogger("clipper.captions")
 DEFAULT_PRESET: Dict[str, Any] = {
     "name": "classic_yellow",
     "font_name": "Arial Black",
-    "font_size": 88,
+    "font_size": 66,
     "primary_colour": "&H0000FFFF",     # Yellow fill in ASS BGR (&HAABBGGRR)
     "secondary_colour": "&H00FFFFFF",   # Base white text before highlight
     "outline_colour": "&H00000000",     # Black outline
     "back_colour": "&H96000000",        # Translucent black shadow
     "bold": -1,
     "italic": 0,
-    "outline": 6,
+    "outline": 5,
     "shadow": 2,
     "alignment": 2,                     # 2 = Bottom Center
     "margin_l": 60,
@@ -136,7 +136,7 @@ def wrap_hook(text: str, max_chars: int = 16) -> str:
     size = ""
     if len(lines) > 2:
         lines = textwrap.wrap(text.upper().strip(), width=22)[:3]
-        size = r"{\fs70}"
+        size = r"{\fs56}"
     return size + r"\N".join(lines)
 
 
@@ -152,8 +152,8 @@ def build_ass_header(preset: Dict[str, Any], hook_margin_v: int = 240) -> str:
     )
 
     hook_style_line = (
-        f"Style: Hook,Arial Black,92,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,"
-        f"-1,0,0,0,100,100,1,0,1,8,4,8,80,80,{hook_margin_v},1"
+        f"Style: Hook,Arial Black,72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,"
+        f"-1,0,0,0,100,100,1,0,1,6,3,8,80,80,{hook_margin_v},1"
     )
 
     return f"""[Script Info]
@@ -220,7 +220,7 @@ def make_ass(
     limit_words = max_words if max_words is not None else preset.get("max_words_per_line", 5)
     gap_limit = gap_break if gap_break is not None else preset.get("gap_break_seconds", 0.6)
     # Keep each caption line inside the 1080px frame (no auto-wrap) and break at sentence ends
-    max_chars = int(preset.get("max_chars_per_line", 18))
+    max_chars = int(preset.get("max_chars_per_line", 22))
 
     groups: List[List[Tuple[float, float, str]]] = []
     cur: List[Tuple[float, float, str]] = []

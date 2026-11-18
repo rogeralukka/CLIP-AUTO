@@ -137,6 +137,92 @@ def detect_faces_multiscale(detector: "FaceDetectorWrapper", frame_bgr: np.ndarr
     return unique
 
 
+def fine_face_pass(detector: "FaceDetectorWrapper", samples: List[Tuple[float, np.ndarray]],
+                   max_frames: int = 8) -> List[Tuple[float, Tuple[int, int, int, int]]]:
+    """Find SMALL faces: a streamer's facecam in a 1080p frame.
+
+    The face model looks at a ~128px picture, so a 70px face in a 1920px frame is ~5px to it and
+    is missed (even in 2x tiles). Here a few frames are scanned in many small overlapping tiles
+    (the face fills a good part of each), faces that keep showing up in the same place become
+    candidate spots, and each spot is then checked on EVERY sampled frame by looking only at a
+    small crop around it.
+    """
+    n = len(samples)
+    if n == 0:
+        return []
+    idx = sorted({int(i) for i in np.linspace(0, n - 1, min(max_frames, n))})
+    h, w = samples[0][1].shape[:2]
+    sizes = sorted({max(160, int(h * 0.45)), max(120, int(h * 0.28))}, reverse=True)
+    raw: List[Tuple[int, int, int, int, int]] = []
+    for i in idx:
+        frame = samples[i][1]
+        for ts in sizes:
+            step = max(1, ts // 2)
+            ys = list(range(0, max(1, h - ts + 1), step))
+            xs = list(range(0, max(1, w - ts + 1), step))
+            if ys[-1] != max(0, h - ts):
+                ys.append(max(0, h - ts))
+            if xs[-1] != max(0, w - ts):
+                xs.append(max(0, w - ts))
+            for ty in ys:
+                for tx in xs:
+                    tile = frame[ty:ty + ts, tx:tx + ts]
+                    if tile.size == 0:
+                        continue
+                    for (x, y, bw, bh) in detector.detect_faces(tile):
+                        if bh >= 0.03 * h:
+                            raw.append((tx + x, ty + y, bw, bh, i))
+    # group the finds that sit in the same place
+    groups: List[Dict[str, Any]] = []
+    for (x, y, bw, bh, i) in sorted(raw, key=lambda r: -r[2] * r[3]):
+        cx, cy = x + bw / 2.0, y + bh / 2.0
+        for g in groups:
+            gx, gy, gw, gh = g["box"]
+            if abs(cx - (gx + gw / 2.0)) < gw * 0.6 and abs(cy - (gy + gh / 2.0)) < gh * 0.6:
+                g["frames"].add(i)
+                g["boxes"].append((x, y, bw, bh))
+                break
+        else:
+            groups.append({"box": (x, y, bw, bh), "frames": {i}, "boxes": [(x, y, bw, bh)]})
+    need = max(2, int(np.ceil(0.3 * len(idx))))
+    spots = [g for g in groups if len(g["frames"]) >= need]
+    out: List[Tuple[float, Tuple[int, int, int, int]]] = []
+    for g in spots:
+        bx = np.median(np.array(g["boxes"], dtype=np.float32), axis=0)
+        gx, gy, gw, gh = [float(v) for v in bx]
+        side = int(max(gw, gh) * 3.0)
+        x0 = int(max(0, min(w - side, gx + gw / 2.0 - side / 2.0)))
+        y0 = int(max(0, min(h - side, gy + gh / 2.0 - side / 2.0)))
+        side = max(1, min(side, w - x0, h - y0))
+        for t, frame in samples:
+            crop = frame[y0:y0 + side, x0:x0 + side]
+            if crop.size == 0:
+                continue
+            best = None
+            for (x, y, bw, bh) in detector.detect_faces(crop):
+                # same spot and about the same size as the spot's face
+                if abs((x + bw / 2.0) - (gx + gw / 2.0 - x0)) < gw * 0.7 and abs((y + bh / 2.0) - (gy + gh / 2.0 - y0)) < gh * 0.7 \
+                        and 0.5 * gh <= bh <= 1.8 * gh:
+                    if best is None or bw * bh > best[2] * best[3]:
+                        best = (x + x0, y + y0, bw, bh)
+            if best is not None:
+                out.append((t, best))
+    return out
+
+
+def _add_fine_detections(all_detections, fine) -> int:
+    """Add small-face finds to the list unless the same face is already there. Returns how many were added."""
+    added = 0
+    for t, b in fine:
+        cx, cy = b[0] + b[2] / 2.0, b[1] + b[3] / 2.0
+        if any(abs(t0 - t) < 1e-6 and abs(cx - (b0[0] + b0[2] / 2.0)) < b[2] * 0.6 and abs(cy - (b0[1] + b0[3] / 2.0)) < b[3] * 0.6
+               for t0, b0 in all_detections):
+            continue
+        all_detections.append((t, b))
+        added += 1
+    return added
+
+
 def get_face_detector() -> FaceDetectorWrapper:
     global _DETECTOR
     if _DETECTOR is None:
@@ -384,6 +470,13 @@ def detect_facecam(
             for b in boxes:
                 all_detections.append((t, b))
 
+    # Small faces (a facecam in a 1080p frame) are invisible to the whole-frame pass
+    try:
+        if _add_fine_detections(all_detections, fine_face_pass(detector, samples)):
+            frames_with_face = len({round(t, 2) for t, _ in all_detections})
+    except Exception as e:
+        logger.warning(f"Small-face pass failed: {e}")
+
     total_samples = len(samples)
     cluster = cluster_face_boxes(all_detections, frame_w, frame_h)
 
@@ -401,6 +494,31 @@ def detect_facecam(
             "total_samples": total_samples,
             "detected_samples": 0,
         }
+
+    # The biggest face cluster is not always the cam: a game character's face can be bigger or
+    # show up more. Among the clusters that stay put, prefer one that looks like a cam (still,
+    # near an edge, small, there most of the time) - the stillest one wins.
+    cam_pick = None
+    try:
+        big_ratio = float(fc_cfg.get("fullscreen_face_ratio", 0.22))
+        max_drift = float(fc_cfg.get("facecam_max_drift", 0.03))
+        best_key = None
+        for c in _stable_clusters(all_detections, frame_w, frame_h, total_samples):
+            mb = c["median_box"]
+            pres = min(c["count"], total_samples) / max(1, total_samples)
+            ccx = np.array([q[1][0] + q[1][2] / 2.0 for q in c["boxes"]], dtype=np.float32)
+            ccy = np.array([q[1][1] + q[1][3] / 2.0 for q in c["boxes"]], dtype=np.float32)
+            dr = float(max(np.std(ccx) / frame_w, np.std(ccy) / frame_h)) if len(ccx) > 1 else 0.0
+            mx, my = (mb[0] + mb[2] / 2.0) / frame_w, (mb[1] + mb[3] / 2.0) / frame_h
+            edge = mx < 0.35 or mx > 0.65 or my < 0.30 or my > 0.70
+            if pres >= thresh and mb[3] < frame_h * big_ratio and edge and dr <= max_drift:
+                key = (dr, -pres)
+                if best_key is None or key < best_key:
+                    best_key, cam_pick = key, c
+        if cam_pick is not None:
+            cluster = cam_pick
+    except Exception as e:
+        logger.warning(f"Cam-like face search failed: {e}")
 
     cluster_count = min(cluster["count"], total_samples)
     presence_ratio = round(cluster_count / max(1, total_samples), 3)
@@ -473,7 +591,7 @@ def detect_facecam(
     elif len(cams) == 1:
         stream_type, layout, found = "gaming_facecam", "split", True
     elif presence_ratio >= thresh and not is_big and near_edge and (
-            (stable and other_ratio < 0.35) or drift <= 0.012):
+            (stable and other_ratio < 0.35) or drift <= 0.012 or cam_pick is not None):
         # Cam found by its face only (no clear outline). A very still face near the edge is
         # a cam even when the game shows faces of its own (story games).
         stream_type, layout, found = "gaming_facecam", "split", True

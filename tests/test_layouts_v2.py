@@ -115,7 +115,7 @@ def test_caption_anchor_sits_on_seam_or_below_middle():
     two = {"frame_size": (1920, 1080), "cams": [{"rect": (0, 0, 480, 321)}, {"rect": (1437, 0, 480, 321)}]}
     assert caption_anchor_y("duo", two) == TOP_BAND + plan_cam_band("duo", two)
     # a single picture: a bit below the middle of the 1920px frame
-    assert 960 < caption_anchor_y("gameplay", None) < 1200
+    assert 1264 < caption_anchor_y("gameplay", None) < 1600  # in the band under the picture
 
 
 def test_make_ass_places_captions_at_given_y_and_plans_emoji(tmp_path):

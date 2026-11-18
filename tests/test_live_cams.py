@@ -76,3 +76,27 @@ class TestLiveCams(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- small-face pass
+def test_add_fine_detections_skips_duplicates():
+    from clipper.facecam import _add_fine_detections
+    dets = [(1.0, (100, 100, 80, 80))]
+    added = _add_fine_detections(dets, [(1.0, (102, 101, 80, 80)), (2.0, (100, 100, 80, 80))])
+    assert added == 1 and len(dets) == 2
+
+
+def test_fine_face_pass_empty_samples():
+    from clipper.facecam import fine_face_pass
+
+    class D:
+        def detect(self, *a, **k):
+            return []
+    assert fine_face_pass(D(), []) == []
+
+
+def test_caption_font_is_moderate_and_framed_captions_sit_under_picture():
+    from clipper.captions import DEFAULT_PRESET
+    from clipper.cutter import caption_anchor_y
+    assert DEFAULT_PRESET["font_size"] <= 72
+    assert caption_anchor_y("gameplay", None) >= 1300

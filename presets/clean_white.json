@@ -2,7 +2,7 @@
   "name": "clean_white",
   "description": "Minimalist high-contrast pure white karaoke fill over translucent muted text",
   "font_name": "Arial Black",
-  "font_size": 84,
+  "font_size": 66,
   "primary_colour": "&H00FFFFFF",
   "secondary_colour": "&H00999999",
   "outline_colour": "&H00000000",
