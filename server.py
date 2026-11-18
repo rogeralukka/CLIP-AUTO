@@ -25,7 +25,7 @@ os.chdir(ROOT)
 
 from clipper.campaigns import delete_campaign, list_campaigns, load_campaign, save_campaign  # noqa: E402
 from clipper.config import load_config, save_user_override  # noqa: E402
-from clipper.judge import is_ollama_available  # noqa: E402
+from clipper.judge import ensure_ollama_running, is_ollama_available  # noqa: E402
 from clipper.pipeline import rerender_clip  # noqa: E402
 from clipper.queue import (  # noqa: E402
     add_job, cancel_job, clear_finished_jobs, confirm_render_moments, delete_job,
@@ -355,7 +355,16 @@ def live_stop(sid: str):
     return {"ok": True}
 
 
+def _start_ollama_in_background():
+    """Studio opens -> Ollama is started too (hidden), so the AI judge can use its model."""
+    llm = load_config().get("llm", {})
+    if llm.get("autostart_ollama", True):
+        threading.Thread(target=ensure_ollama_running, args=(llm.get("endpoint", "http://localhost:11434"),),
+                         daemon=True, name="ollama-autostart").start()
+
+
 if __name__ == "__main__":
     ensure_worker_running()
+    _start_ollama_in_background()
     print("\n  CLIP AUTO Studio  ->  http://127.0.0.1:8765\n")
     uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")

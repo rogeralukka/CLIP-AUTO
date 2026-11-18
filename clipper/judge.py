@@ -1,7 +1,12 @@
 """Local LLM Judge module via Ollama (Qwen 8B/7B) with VRAM unloading and strict JSON schema."""
 import json
 import logging
+import os
 import re
+import shutil
+import subprocess
+import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
@@ -87,39 +92,106 @@ def validate_judge_response(raw_text: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def find_ollama_exe() -> Optional[str]:
+    """Where ollama is installed (PATH first, then the usual Windows install folder)."""
+    exe = shutil.which("ollama")
+    if exe:
+        return exe
+    for base in (os.environ.get("LOCALAPPDATA"), os.environ.get("ProgramFiles")):
+        if base:
+            cand = os.path.join(base, "Programs", "Ollama", "ollama.exe") if base == os.environ.get("LOCALAPPDATA") \
+                else os.path.join(base, "Ollama", "ollama.exe")
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
+def ensure_ollama_running(endpoint: str = "http://localhost:11434", wait_seconds: float = 20.0) -> bool:
+    """Start the Ollama server in the background when it is not running (no window).
+
+    Returns True when it answers. Never raises: no Ollama installed just means no AI judge."""
+    ok, _ = is_ollama_available(endpoint)
+    if ok:
+        return True
+    exe = find_ollama_exe()
+    if not exe:
+        logger.info("Ollama is not installed (or not on PATH); the AI judge stays off.")
+        return False
+    try:
+        flags = 0
+        if sys.platform == "win32":
+            flags = 0x08000000 | 0x00000008   # CREATE_NO_WINDOW | DETACHED_PROCESS
+        subprocess.Popen([exe, "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=flags)
+        logger.info("Started Ollama in the background.")
+    except Exception as e:
+        logger.warning(f"Could not start Ollama: {e}")
+        return False
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if is_ollama_available(endpoint, timeout=1.0)[0]:
+            return True
+    return False
+
+
+def unload_ollama_model(endpoint: str, model: str) -> None:
+    """Free the GPU right away (Whisper and the video render need the VRAM)."""
+    try:
+        payload = json.dumps({"model": model, "keep_alive": 0}).encode("utf-8")
+        req = urllib.request.Request(f"{endpoint.rstrip('/')}/api/generate", data=payload,
+                                     headers={"Content-Type": "application/json", "User-Agent": "StreamClipper/1.0"})
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception:
+        pass
+
+
 def call_ollama_generate(
     prompt: str,
     endpoint: str = "http://localhost:11434",
-    model: str = "qwen2.5:7b",
+    model: str = "qwen3:14b",
     timeout: float = 30.0,
 ) -> Optional[str]:
-    """Call Ollama /api/generate with format=json and keep_alive=0 (instant VRAM unloading)."""
+    """Call Ollama /api/generate (JSON output, thinking off, model kept loaded between calls).
+
+    The model stays in VRAM for a couple of minutes so judging 30 moments is not 30 model loads;
+    rank_moments_with_llm unloads it when it is done (12GB VRAM rule)."""
     gen_url = f"{endpoint.rstrip('/')}/api/generate"
+    llm_cfg = load_config().get("llm", {})
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "keep_alive": 0,  # Unload LLM model immediately after generation (12GB VRAM rule)
+        "think": False,          # Qwen3 etc. would otherwise spend the answer on "thinking" text
+        "keep_alive": f"{int(llm_cfg.get('keep_alive_seconds', 180))}s",
         "options": {
             "temperature": 0.2,
+            "num_ctx": int(llm_cfg.get("num_ctx", 8192)),
         }
     }
 
-    try:
-        data_bytes = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            gen_url,
-            data=data_bytes,
-            headers={"Content-Type": "application/json", "User-Agent": "StreamClipper/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status == 200:
-                res_json = json.loads(resp.read().decode("utf-8"))
-                return res_json.get("response", "")
-    except Exception as e:
-        logger.warning(f"Ollama inference failed ({e}).")
-        return None
+    for attempt in (0, 1):
+        try:
+            data_bytes = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                gen_url,
+                data=data_bytes,
+                headers={"Content-Type": "application/json", "User-Agent": "StreamClipper/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    res_json = json.loads(resp.read().decode("utf-8"))
+                    return res_json.get("response", "")
+        except urllib.error.HTTPError as e:
+            if e.code == 400 and attempt == 0 and "think" in payload:
+                payload.pop("think")      # a model without a thinking mode refuses the flag
+                continue
+            logger.warning(f"Ollama inference failed ({e}).")
+            return None
+        except Exception as e:
+            logger.warning(f"Ollama inference failed ({e}).")
+            return None
 
     return None
 
@@ -169,7 +241,7 @@ def judge_single_moment(
     transcript: str,
     chat_sample: List[str],
     endpoint: str = "http://localhost:11434",
-    model: str = "qwen2.5:7b",
+    model: str = "qwen3:14b",
     timeout: float = 30.0,
     retry_count: int = 1,
 ) -> Optional[Dict[str, Any]]:
@@ -270,10 +342,11 @@ def rank_moments_with_llm(
         return moments[:top_n] if top_n else moments
 
     endpoint = llm_cfg.get("endpoint", "http://localhost:11434")
-    model_name = llm_cfg.get("model", "qwen2.5:7b")
+    model_name = llm_cfg.get("model", "qwen3:14b")
     timeout = float(llm_cfg.get("timeout_seconds", 30))
 
-    # Check Ollama connection
+    # Check Ollama connection (start it in the background when it is not running)
+    ensure_ollama_running(endpoint)
     available, pulled_models = is_ollama_available(endpoint)
     if not available:
         logger.info(f"Ollama server not reachable at {endpoint}. Skipping LLM judge silently.")
@@ -301,64 +374,67 @@ def rank_moments_with_llm(
     weight_llm = float(llm_cfg.get("weight_llm", 0.50))
     weight_hype = float(llm_cfg.get("weight_hype", 0.50))
 
-    for m in candidates:
-        if llm_cfg.get("refine_boundaries", True):
-            lim = m.get("len_limits") or (15.0, 90.0)
-            try:
-                if refine_boundaries_with_llm(m, full_transcript_data, endpoint, model_name, timeout,
-                                              min_len=float(lim[0]), max_len=float(lim[1])):
-                    logger.info(f"LLM set story bounds {m['start']:.1f}-{m['end']:.1f}: {m.get('topic', '')}")
-            except Exception as e:
-                logger.debug(f"Boundary refine failed: {e}")
-        st = m["start"]
-        et = m["end"]
+    try:
+        for m in candidates:
+            if llm_cfg.get("refine_boundaries", True):
+                lim = m.get("len_limits") or (15.0, 90.0)
+                try:
+                    if refine_boundaries_with_llm(m, full_transcript_data, endpoint, model_name, timeout,
+                                                  min_len=float(lim[0]), max_len=float(lim[1])):
+                        logger.info(f"LLM set story bounds {m['start']:.1f}-{m['end']:.1f}: {m.get('topic', '')}")
+                except Exception as e:
+                    logger.debug(f"Boundary refine failed: {e}")
+            st = m["start"]
+            et = m["end"]
 
-        # Transcript text
-        t_text = ""
-        if full_transcript_data:
-            t_text = get_transcript_text_in_window(full_transcript_data, st, et)
+            # Transcript text
+            t_text = ""
+            if full_transcript_data:
+                t_text = get_transcript_text_in_window(full_transcript_data, st, et)
 
-        # Chat sample around peak
-        chat_sample = []
-        if comments:
-            chat_sample = [
-                c.get("message", {}).get("body", "")
-                for c in comments
-                if c.get("content_offset_seconds") is not None and st - 2.0 <= c["content_offset_seconds"] <= et + 2.0
-                and c.get("message", {}).get("body", "").strip()
-            ]
+            # Chat sample around peak
+            chat_sample = []
+            if comments:
+                chat_sample = [
+                    c.get("message", {}).get("body", "")
+                    for c in comments
+                    if c.get("content_offset_seconds") is not None and st - 2.0 <= c["content_offset_seconds"] <= et + 2.0
+                    and c.get("message", {}).get("body", "").strip()
+                ]
 
-        # Call judge
-        eval_res = judge_single_moment(
-            moment=m,
-            transcript=t_text,
-            chat_sample=chat_sample,
-            endpoint=endpoint,
-            model=model_name,
-            timeout=timeout,
-            retry_count=llm_cfg.get("retry_count", 1),
-        )
+            # Call judge
+            eval_res = judge_single_moment(
+                moment=m,
+                transcript=t_text,
+                chat_sample=chat_sample,
+                endpoint=endpoint,
+                model=model_name,
+                timeout=timeout,
+                retry_count=llm_cfg.get("retry_count", 1),
+            )
 
-        if eval_res:
-            m["llm"] = eval_res
-            m["hook_title"] = eval_res.get("hook_title", "")
-            m["llm_score"] = eval_res.get("score", 0.0)
-            m["llm_reason"] = eval_res.get("reason", "")
+            if eval_res:
+                m["llm"] = eval_res
+                m["hook_title"] = eval_res.get("hook_title", "")
+                m["llm_score"] = eval_res.get("score", 0.0)
+                m["llm_reason"] = eval_res.get("reason", "")
 
-            # Blend scores
-            # Normalized hype score (scale 0-10)
-            norm_hype = min(10.0, max(0.0, float(m.get("score", 0.0)) * 2.0))
-            blended = weight_llm * eval_res["score"] + weight_hype * norm_hype
-            # A clip that needs earlier context, or stops before the payoff, ranks lower
-            if not eval_res.get("standalone", True):
-                blended -= 2.0
-            if not eval_res.get("payoff_inside", True):
-                blended -= 1.5
-            m["blended_score"] = round(blended, 2)
-        else:
-            # Fallback to pure hype score
-            m["blended_score"] = round(float(m.get("score", 0.0)), 2)
-            m["llm"] = None
+                # Blend scores
+                # Normalized hype score (scale 0-10)
+                norm_hype = min(10.0, max(0.0, float(m.get("score", 0.0)) * 2.0))
+                blended = weight_llm * eval_res["score"] + weight_hype * norm_hype
+                # A clip that needs earlier context, or stops before the payoff, ranks lower
+                if not eval_res.get("standalone", True):
+                    blended -= 2.0
+                if not eval_res.get("payoff_inside", True):
+                    blended -= 1.5
+                m["blended_score"] = round(blended, 2)
+            else:
+                # Fallback to pure hype score
+                m["blended_score"] = round(float(m.get("score", 0.0)), 2)
+                m["llm"] = None
+    finally:
+        unload_ollama_model(endpoint, model_name)
 
     # Sort candidates by blended score descending
     candidates.sort(key=lambda m: -m.get("blended_score", m.get("score", 0.0)))

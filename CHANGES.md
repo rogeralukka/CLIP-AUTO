@@ -4,6 +4,15 @@ This document provides a comprehensive log of all architectural improvements, up
 
 ---
 
+## 2026-11-18 (night 2): AI judge on a model that fits the card + Ollama starts with Studio
+
+- Default judge model is now `qwen3:14b` (~9 GB, fits the 12 GB card entirely; the old 27B spilled
+  into system RAM and timed out). Requests turn Qwen3's "thinking" off (it ate the JSON answer),
+  use an 8k context, and keep the model loaded between moments (it used to be reloaded for every
+  one); the model is unloaded when judging ends so Whisper and the render get the VRAM back.
+- Studio starts Ollama in the background (no window) when it opens, and again before judging if
+  it is not running. Turn off with `llm.autostart_ollama: false`.
+
 ## 2026-11-18 (night): one cam layout for the whole stream + 127 Android emojis
 
 - **Stream-wide cam memory:** an overlay stays put for the whole stream, but detection was run
