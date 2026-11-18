@@ -4,6 +4,20 @@ This document provides a comprehensive log of all architectural improvements, up
 
 ---
 
+## 2026-11-18 (night): one cam layout for the whole stream + 127 Android emojis
+
+- **Stream-wide cam memory:** an overlay stays put for the whole stream, but detection was run
+  clip by clip, so Speed (green screen, leans in and out) was found in some clips and missed in
+  others, and clips with only Speed showing fell back to a full-picture clip. Cams found in any clip
+  are now remembered (`stream_cams.json` in the job folder) and handed to every other clip: a
+  remembered cam comes back when a face really sits in that spot (a stable face, in at least
+  35% of the sampled frames). Clips rendered before the cam was first seen get a second look at
+  the end of the run and are re-rendered if they were missing one. Cutout people may be bigger
+  (up to 34% of the screen height) once a normal cam rectangle proves it is a gaming layout.
+- **Emojis:** 127 Android-style emojis (Noto Color Emoji) and ~600 trigger words/phrases ("no way",
+  "oh my god", "running", "arrested" ...), up to one a second (max 40 per clip), the same one not
+  repeated within 4 s, generic ones limited.
+
 ## 2026-11-18 (evening): review page + clips appear as they finish
 
 - **Review:** every moment starts selected (untick what you don't want). Your ticks, start/end

@@ -330,8 +330,13 @@ def detect_facecam(
     sample_interval: Optional[float] = None,
     presence_threshold: Optional[float] = None,
     box_padding: Optional[float] = None,
+    known_cams: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Detect streamer facecam across video duration and select layout.
+
+    `known_cams` are cams already found in other parts of the SAME stream. An overlay stays in
+    place for the whole stream, so a cam that is missed here (the streamer leaned in, a
+    different scale) is taken back from it when a face really is in that spot.
 
     Returns dict:
     {
@@ -438,6 +443,13 @@ def detect_facecam(
                                        frames, cams, frame_w, frame_h, total_samples)
     except Exception as e:
         logger.warning(f"Cutout cam search failed: {e}")
+
+    # Cams already known from other parts of this stream: one overlay for the whole stream
+    if known_cams:
+        try:
+            cams = adopt_known_cams(cams, known_cams, all_detections, frame_w, frame_h, total_samples)
+        except Exception as e:
+            logger.warning(f"Using known cams failed: {e}")
 
     # How many people are on screen at once (big faces, outside any cam)
     def _in_cam(b):
@@ -1003,7 +1015,10 @@ def find_cutout_cams(clusters: List[Dict[str, Any]], frames: List[np.ndarray], c
         fx, fy, fw, fh = c["median_box"]
         # A cutout person is seen at cam size (face ~10-18% of the screen height); bigger faces
         # are IRL close-ups, smaller ones are game characters or the crowd.
-        if c["count"] < min_presence * total or not (0.07 * frame_h <= fh <= 0.22 * frame_h):
+        # (a person who leans in towards the camera is bigger, so the limit is looser once a
+        # normal cam rectangle proves this is a gaming layout, not an IRL close-up)
+        max_face = 0.34 if cams else 0.22
+        if c["count"] < min_presence * total or not (0.07 * frame_h <= fh <= max_face * frame_h):
             continue
         cx, cy = fx + fw / 2.0, fy + fh / 2.0
         if any(r["rect"][0] <= cx <= r["rect"][0] + r["rect"][2] and r["rect"][1] <= cy <= r["rect"][1] + r["rect"][3]
@@ -1026,4 +1041,75 @@ def find_cutout_cams(clusters: List[Dict[str, Any]], frames: List[np.ndarray], c
             "real_sides": 0, "edge_cov": 0.0, "kind": "cutout",
             "corner": f"{'top' if cyn < 0.5 else 'bottom'}_{'left' if cxn < 0.5 else 'right'}",
         })
+    return out
+
+
+def stream_cam_memory(cams: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The parts of each cam worth remembering for the rest of the stream."""
+    keep = []
+    for c in cams or []:
+        keep.append({"rect": list(c["rect"]), "face_box": list(c.get("face_box") or c["rect"]),
+                     "kind": c.get("kind") or "box", "corner": c.get("corner", "unknown")})
+    return keep
+
+
+def merge_known_cams(known: List[Dict[str, Any]], cams: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add cams seen in a clip to the stream's list (overlays that overlap an old one are the same)."""
+    out = list(known)
+    for new in stream_cam_memory([c for c in cams if not c.get("from_stream")]):
+        nr = tuple(new["rect"])
+        same = False
+        for old in out:
+            orr = tuple(old["rect"])
+            ncx, ncy = nr[0] + nr[2] / 2.0, nr[1] + nr[3] / 2.0
+            if _iou(nr, orr) > 0.3 or (orr[0] <= ncx <= orr[0] + orr[2] and orr[1] <= ncy <= orr[1] + orr[3]):
+                same = True
+                break
+        if not same:
+            out.append(new)
+    return out
+
+
+def adopt_known_cams(cams: List[Dict[str, Any]], known: List[Dict[str, Any]], detections,
+                     frame_w: int, frame_h: int, total: int, min_presence: float = 0.35) -> List[Dict[str, Any]]:
+    """Add cams the rest of the stream had but this clip's search missed, when a face is
+    really in that spot (so a cam that is not on screen in this part is not invented)."""
+    out = list(cams)
+    for k in known:
+        kr = tuple(int(v) for v in k["rect"])
+        kcx, kcy = kr[0] + kr[2] / 2.0, kr[1] + kr[3] / 2.0
+        if any(_iou(kr, tuple(c["rect"])) > 0.3 or
+               (c["rect"][0] <= kcx <= c["rect"][0] + c["rect"][2] and c["rect"][1] <= kcy <= c["rect"][1] + c["rect"][3])
+               for c in out):
+            continue
+        cutout = k.get("kind") == "cutout"
+        hits = []
+        if cutout:
+            fb = k.get("face_box") or kr
+            fcx, fcy = fb[0] + fb[2] / 2.0, fb[1] + fb[3] / 2.0
+            for t, b in detections:
+                bcx, bcy = b[0] + b[2] / 2.0, b[1] + b[3] / 2.0
+                if abs(bcx - fcx) <= 0.12 * frame_w and abs(bcy - fcy) <= 0.20 * frame_h and b[3] >= 0.05 * frame_h:
+                    hits.append((t, b))
+        else:
+            for t, b in detections:
+                bcx, bcy = b[0] + b[2] / 2.0, b[1] + b[3] / 2.0
+                if kr[0] <= bcx <= kr[0] + kr[2] and kr[1] <= bcy <= kr[1] + kr[3]:
+                    hits.append((t, b))
+        presence = len({round(t, 2) for t, _ in hits}) / float(max(1, total))
+        if presence < min_presence:
+            continue
+        med = [int(np.median([b[i] for _, b in hits])) for i in range(4)]
+        if cutout and len(hits) > 2:
+            # a real person stays in one place; faces drifting around are game characters
+            sx = np.std([b[0] + b[2] / 2.0 for _, b in hits]) / frame_w
+            sy = np.std([b[1] + b[3] / 2.0 for _, b in hits]) / frame_h
+            if max(sx, sy) > 0.05:
+                continue
+        rect = cutout_region(tuple(med), frame_w, frame_h) if cutout else kr
+        if any(_iou(rect, tuple(c["rect"])) > 0.3 for c in out):
+            continue
+        out.append({"rect": tuple(rect), "face_box": tuple(med), "presence": round(presence, 3),
+                    "real_sides": 0, "edge_cov": 0.0, "kind": k.get("kind") or "box",
+                    "corner": k.get("corner", "unknown"), "from_stream": True})
     return out

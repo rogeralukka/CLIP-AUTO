@@ -133,14 +133,42 @@ def test_make_ass_places_captions_at_given_y_and_plans_emoji(tmp_path):
     assert json.load(open(str(tmp_path / "c.emoji.json"))) == []
 
 
-def test_emoji_planner_spaces_out_and_never_repeats_back_to_back():
+def test_emoji_planner_spaces_out_and_does_not_repeat_soon():
     from clipper.emoji import plan_emoji_events
-    cards = [[(i * 0.5, i * 0.5 + 0.4, "money")] for i in range(12)]
+    cards = [[(i * 0.5, i * 0.5 + 0.4, "money")] for i in range(30)]
     ev = plan_emoji_events(cards)
-    assert 1 <= len(ev) <= 14
+    assert 1 <= len(ev) <= 40
     starts = [e[0] for e in ev]
-    assert all(b - a >= 1.6 - 1e-6 for a, b in zip(starts, starts[1:]))
-    assert all(a[2] != b[2] for a, b in zip(ev, ev[1:]))
+    assert all(b - a >= 4.0 - 1e-6 for a, b in zip(starts, starts[1:]))   # same emoji: >= 4 s apart
+    mixed = [[(i * 1.0, i * 1.0 + 0.6, w)] for i, w in enumerate(["funny", "money", "cops", "table", "dead", "car"])]
+    ev2 = plan_emoji_events(mixed)
+    assert [e[2] for e in ev2] == ["😂", "💰", "🚓", "💀", "🚗"]
+
+
+def test_emoji_vocabulary_is_broad_and_phrases_work():
+    from clipper.emoji import pick_emoji_for_words
+    assert pick_emoji_for_words("oh my god this is insane".split()) == "😱"
+    assert pick_emoji_for_words("he was running away".split()) == "🏃"
+    assert pick_emoji_for_words("i love this car".split()) in ("❤️", "🚗")
+    assert pick_emoji_for_words(["table"]) is None
+
+
+def test_known_cams_are_taken_back_when_a_face_is_there():
+    from clipper.facecam import adopt_known_cams, merge_known_cams
+    box = {"rect": (1437, 0, 480, 321), "face_box": (1578, 100, 94, 94), "kind": "box"}
+    cut = {"rect": (0, 544, 624, 534), "face_box": (200, 600, 150, 150), "kind": "cutout"}
+    # this clip found only the box cam
+    cams = [{"rect": (1440, 0, 477, 321), "face_box": (1578, 100, 94, 94), "presence": 1.0}]
+    # Speed leaned in: a bigger face in his spot in 8 of 10 samples
+    dets = [(float(t), (190 + t % 2, 560, 190, 190)) for t in range(8)]
+    out = adopt_known_cams(cams, [box, cut], dets, 1920, 1080, 10)
+    assert len(out) == 2 and out[1].get("from_stream") and out[1]["kind"] == "cutout"
+    # no face there -> nothing invented
+    assert len(adopt_known_cams(cams, [box, cut], [], 1920, 1080, 10)) == 1
+    # memory: the same overlay is not added twice
+    known = merge_known_cams([], out)
+    assert len(merge_known_cams(known, cams)) == len(known)
+
 
 
 def test_clip_done_callback_errors_never_stop_rendering():

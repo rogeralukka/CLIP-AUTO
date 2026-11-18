@@ -529,8 +529,12 @@ def _worker_loop():
 
                 def _add(j):
                     clips = j.setdefault("clips", [])
-                    if not any(x.get("path") == info.get("path") for x in clips):
-                        clips.append(info)
+                    for k, x in enumerate(clips):
+                        if x.get("path") == info.get("path"):
+                            # same clip re-rendered: new picture, but keep Kept/Rejected
+                            clips[k] = dict(info, status=x.get("status", info.get("status", "PENDING")))
+                            return
+                    clips.append(info)
                 mutate_job(next_job_id, _add)
 
             raw_clips = render_pipeline_moments(
@@ -568,7 +572,8 @@ def _worker_loop():
                     # Keep what is already there (the person may have kept/rejected a clip while
                     # the rest rendered); only add clips that never made it in
                     have = {x.get("path"): x for x in (j.get("clips") or [])}
-                    j["clips"] = [have.get(c.get("path"), c) for c in processed_clips]
+                    j["clips"] = [dict(c, status=have[c.get("path")].get("status", c.get("status", "PENDING")))
+                                  if c.get("path") in have else c for c in processed_clips]
 
             mutate_job(next_job_id, _finish)
             logger.info(f"Job {next_job_id} successfully completed ({len(processed_clips)} clips).")

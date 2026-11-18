@@ -20,7 +20,7 @@ from .downloader import (
     prepare_input,
     video_height,
 )
-from .facecam import detect_facecam, resolve_layout
+from .facecam import detect_facecam, merge_known_cams, resolve_layout
 from .process_manager import check_cancelled_or_paused, is_job_paused, log_job_message
 from .qc import generate_platform_metadata, perform_qc_check
 from .transcription import (
@@ -277,6 +277,27 @@ def _notify_clip_done(cb, clip: Dict[str, Any]) -> None:
         logger.warning(f"Clip-done callback failed: {e}")
 
 
+def _known_cams_path(output_dir: str) -> str:
+    return os.path.join(output_dir, "stream_cams.json")
+
+
+def _load_known_cams(output_dir: str) -> List[Dict[str, Any]]:
+    try:
+        with open(_known_cams_path(output_dir), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _save_known_cams(output_dir: str, known: List[Dict[str, Any]]) -> None:
+    try:
+        with open(_known_cams_path(output_dir), "w", encoding="utf-8") as f:
+            json.dump(known, f)
+    except OSError:
+        pass
+
+
 def render_pipeline_moments(
     video_path: str,
     moments: List[Dict[str, Any]],
@@ -306,6 +327,8 @@ def render_pipeline_moments(
     total = len(moments)
     if total == 0:
         return []
+    # Cams found in any clip of this stream (overlays stay put for the whole stream)
+    known_cams = _load_known_cams(output_dir)
 
     # If full transcript data wasn't passed directly, attempt to load it from the first moment's vod_id
     if full_transcript_data is None and moments:
@@ -442,7 +465,9 @@ def render_pipeline_moments(
         facecam_info = None
         layout_note = ""
         if clip_layout in ("auto", "split", "duo", "face", "irl"):
-            facecam_info = detect_facecam(rough_path)
+            facecam_info = detect_facecam(rough_path, known_cams=known_cams)
+            known_cams = merge_known_cams(known_cams, facecam_info.get("cams") or [])
+            _save_known_cams(output_dir, known_cams)
             # The stream type picked for the whole job is a preference: each clip is checked,
             # so a part of the stream with no cam (or two cams) still gets a layout that fits.
             active_layout, layout_note = resolve_layout(clip_layout, facecam_info)
@@ -555,6 +580,37 @@ def render_pipeline_moments(
         log_job_message(job_id, f"Finished rendering clip {i} of {total} ({os.path.basename(final_path)})")
 
         clip_step(1.0, f"Finished clip {i} of {total}")
+
+    # Early clips were checked before later ones taught us where this stream's cams sit: give
+    # any clip that is missing a known cam a second look (and a re-render if it really was).
+    for gi, c in enumerate(list(generated_clips)):
+        try:
+            check_cancelled_or_paused(job_id)
+            fc = c.get("facecam")
+            if not fc or len(fc.get("cams") or []) >= len(known_cams):
+                continue
+            mi = int(c.get("index", gi + 1)) - 1
+            m = moments[mi] if 0 <= mi < len(moments) else {}
+            requested = (m.get("layout") if isinstance(m, dict) else None) or "auto"
+            if requested not in ("auto", "split", "duo", "face", "irl"):
+                continue
+            rough = c.get("rough_path")
+            if not rough or not os.path.isfile(rough):
+                continue
+            new_info = detect_facecam(rough, known_cams=known_cams)
+            if len(new_info.get("cams") or []) <= len(fc.get("cams") or []):
+                continue
+            log_job_message(job_id, f"Clip {c.get('index')}: found a cam the first look missed, re-rendering")
+            if progress_callback:
+                progress_callback("render", 95, f"Re-checking cams: re-rendering clip {c.get('index')}", {})
+            upd = dict(c, facecam=new_info, layout=requested)
+            new_clip = rerender_clip(upd, preset_name=preset_name, campaign=campaign, overlay=overlay, cpu=cpu)
+            generated_clips[gi] = new_clip
+            _notify_clip_done(clip_done_callback, new_clip)
+        except Exception as e:
+            if "ancel" in str(type(e).__name__) or "Pause" in str(type(e).__name__):
+                raise
+            logger.warning(f"Second look at clip {c.get('index')} failed: {e}")
 
     return generated_clips
 
