@@ -126,7 +126,7 @@ def upsert_account(account_id: Optional[str], data: Dict[str, Any]) -> str:
     accounts = load_accounts()
     aid = (account_id or "").strip() or f"acc_{int(time.time())}"
     acc = accounts.get(aid, {})
-    for k in ("name", "max_clips_per_day", "schedule_slots"):
+    for k in ("name", "max_clips_per_day", "schedule_slots", "chrome_profile"):
         if k in data and data[k] not in (None, ""):
             acc[k] = data[k]
     if isinstance(data.get("platforms"), dict):
@@ -144,11 +144,64 @@ def upsert_account(account_id: Optional[str], data: Dict[str, Any]) -> str:
     acc.setdefault("name", "My account")
     acc.setdefault("max_clips_per_day", 4)
     acc.setdefault("schedule_slots", list(DEFAULT_SLOTS))
+    acc.setdefault("chrome_profile", "")
     acc.setdefault("platforms", _empty_platforms())
     acc["max_clips_per_day"] = max(1, min(20, int(acc["max_clips_per_day"])))
     accounts[aid] = acc
     save_accounts(accounts)
     return aid
+
+
+# ---------------------------------------------------------------------------
+# one Chrome profile per account = log in once, stay logged in
+# ---------------------------------------------------------------------------
+
+LOGIN_LINKS = {
+    "youtube": "https://www.youtube.com/",
+    "tiktok": "https://www.tiktok.com/login",
+    "instagram": "https://www.instagram.com/accounts/login/",
+    "facebook": "https://www.facebook.com/login",
+}
+ALLOWED_OPEN = set(PLATFORM_LINKS.values()) | set(LOGIN_LINKS.values())
+
+
+def find_chrome() -> Optional[str]:
+    import shutil
+    for base in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)"), os.environ.get("LOCALAPPDATA")):
+        if base:
+            p = os.path.join(base, "Google", "Chrome", "Application", "chrome.exe")
+            if os.path.isfile(p):
+                return p
+    return shutil.which("chrome") or shutil.which("google-chrome")
+
+
+def list_chrome_profiles() -> List[Dict[str, str]]:
+    """Chrome profiles on this computer: [{dir: 'Profile 2', name: 'Kai clips'}]. Read from Chrome's own Local State."""
+    base = os.environ.get("LOCALAPPDATA")
+    if not base:
+        return []
+    path = os.path.join(base, "Google", "Chrome", "User Data", "Local State")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cache = ((json.load(f).get("profile") or {}).get("info_cache")) or {}
+    except Exception:
+        return []
+    return [{"dir": d, "name": (v or {}).get("name") or d} for d, v in sorted(cache.items())]
+
+
+def open_in_profile(profile: str, urls: List[str]) -> Dict[str, Any]:
+    """Open pages in the account's Chrome profile (or the normal browser when no profile is set)."""
+    import subprocess
+    urls = [u for u in dict.fromkeys(urls) if u in ALLOWED_OPEN]
+    if not urls:
+        raise ValueError("Nothing to open.")
+    chrome = find_chrome()
+    if chrome and profile:
+        if profile not in {p["dir"] for p in list_chrome_profiles()}:
+            raise ValueError("That Chrome profile no longer exists. Pick one again in Edit.")
+        subprocess.Popen([chrome, f"--profile-directory={profile}", *urls])
+        return {"opened": len(urls), "profile": profile}
+    return {"opened": 0, "urls": urls}   # caller opens them in the normal browser
 
 
 def delete_account(account_id: str) -> bool:

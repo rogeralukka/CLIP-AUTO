@@ -32,7 +32,7 @@ from clipper.queue import (  # noqa: E402
     ensure_worker_running, load_jobs, mutate_job, pause_job, resume_job,
 )
 from clipper.social import (  # noqa: E402
-    PLATFORM_LINKS, PLATFORMS, calculate_next_slot, connect_youtube, connection_state, delete_account,
+    LOGIN_LINKS, PLATFORM_LINKS, PLATFORMS, list_chrome_profiles, open_in_profile, calculate_next_slot, connect_youtube, connection_state, delete_account,
     delete_schedule_entry, disconnect, get_account, get_daily_scheduled_count, has_client_secret, load_accounts,
     mark_platform, queue_view, retry_platform, save_client_secret, save_credentials, schedule_clip_to_account,
     start_due_loop, upsert_account,
@@ -406,7 +406,14 @@ class SocialAccountIn(BaseModel):
     name: str
     max_clips_per_day: int = 4
     schedule_slots: List[str] = ["11:00", "15:00", "19:00", "22:00"]
+    chrome_profile: str = ""
     platforms: Dict[str, Any] = {}
+
+
+class OpenIn(BaseModel):
+    account_id: str
+    urls: List[str] = []
+    login: bool = False        # open the sign-in pages of the account's platforms instead
 
 
 class SchedulePostIn(BaseModel):
@@ -446,6 +453,26 @@ def get_social_accounts():
         item["connected"] = connection_state(aid)
         out.append(item)
     return out
+
+
+@app.get("/api/social/chrome-profiles")
+def chrome_profiles():
+    return list_chrome_profiles()
+
+
+@app.post("/api/social/open")
+def open_sites(body: OpenIn):
+    """Open the account's sites in its own Chrome profile (where it is already logged in)."""
+    acc = get_account(body.account_id)
+    if not acc:
+        raise HTTPException(404, "Account not found")
+    urls = body.urls
+    if body.login:
+        urls = [LOGIN_LINKS[p] for p, v in (acc.get("platforms") or {}).items() if v.get("enabled") and p in LOGIN_LINKS]
+    try:
+        return open_in_profile(acc.get("chrome_profile") or "", urls)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/social/info")

@@ -230,5 +230,44 @@ class TestPlatformPayloads(Base):
         self.assertIsNone(social._graph_error({"id": "1"}))
 
 
+class TestChromeProfiles(Base):
+    def fake_chrome(self):
+        ud = os.path.join(self.tmp, "Google", "Chrome", "User Data")
+        os.makedirs(ud)
+        with open(os.path.join(ud, "Local State"), "w", encoding="utf-8") as f:
+            json.dump({"profile": {"info_cache": {"Default": {"name": "Me"}, "Profile 2": {"name": "Kai clips"}}}}, f)
+
+    def test_lists_profiles_from_local_state(self):
+        self.fake_chrome()
+        with patch.dict(os.environ, {"LOCALAPPDATA": self.tmp}):
+            self.assertEqual([p["name"] for p in social.list_chrome_profiles()], ["Me", "Kai clips"])
+
+    def test_profile_saved_on_account(self):
+        aid = self.acct(chrome_profile="Profile 2")
+        self.assertEqual(social.get_account(aid)["chrome_profile"], "Profile 2")
+
+    def test_open_uses_profile_and_only_allowed_urls(self):
+        self.fake_chrome()
+        with patch.dict(os.environ, {"LOCALAPPDATA": self.tmp}), patch.object(social, "find_chrome", return_value="chrome.exe"), \
+                patch("subprocess.Popen") as pop:
+            r = social.open_in_profile("Profile 2", [social.PLATFORM_LINKS["youtube"], "https://evil.example/x", social.PLATFORM_LINKS["tiktok"]])
+        cmd = pop.call_args.args[0]
+        self.assertIn("--profile-directory=Profile 2", cmd)
+        self.assertNotIn("https://evil.example/x", cmd)
+        self.assertEqual(r["opened"], 2)
+
+    def test_unknown_profile_and_no_urls_refused(self):
+        self.fake_chrome()
+        with patch.dict(os.environ, {"LOCALAPPDATA": self.tmp}), patch.object(social, "find_chrome", return_value="chrome.exe"):
+            with self.assertRaises(ValueError):
+                social.open_in_profile("Profile 9", [social.PLATFORM_LINKS["youtube"]])
+        with self.assertRaises(ValueError):
+            social.open_in_profile("", ["https://evil.example/x"])
+
+    def test_no_profile_means_caller_opens_normally(self):
+        r = social.open_in_profile("", [social.PLATFORM_LINKS["youtube"]])
+        self.assertEqual(r["opened"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

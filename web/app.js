@@ -435,13 +435,13 @@ async function handleFiles(files) {
 }
 
 async function renderSchedule(force = true) {
-  const [accounts, queue, lib, info] = await Promise.all([
+  const [accounts, queue, lib, info, profiles] = await Promise.all([
     api("/api/social/accounts").catch(() => []), api("/api/social/queue").catch(() => []),
-    api("/api/social/library").catch(() => []), api("/api/social/info").catch(() => ({}))]);
-  const sig = JSON.stringify([accounts, queue, lib.length, info.has_client_secret]) + [...PUB.picks].join("|") + PUB.acct + PUB.edit + PUB.adding + PUB.open + PUB.when + PUB.mode;
+    api("/api/social/library").catch(() => []), api("/api/social/info").catch(() => ({})), api("/api/social/chrome-profiles").catch(() => [])]);
+  const sig = JSON.stringify([accounts, queue, lib.length, info.has_client_secret, profiles.length]) + [...PUB.picks].join("|") + PUB.acct + PUB.edit + PUB.adding + PUB.open + PUB.when + PUB.mode;
   if (!force && sig === PUB.sig) return;
   PUB.sig = sig;
-  S.accounts = accounts; S.scheduleQueue = queue; PUB.lib = lib; PUB.info = info;
+  S.accounts = accounts; S.scheduleQueue = queue; PUB.lib = lib; PUB.info = info; PUB.profiles = profiles;
   if (!accounts.find(a => a.id === PUB.acct)) PUB.acct = accounts[0] ? accounts[0].id : null;
   const acc = accounts.find(a => a.id === PUB.acct);
   const forming = PUB.adding || (PUB.edit && acc);
@@ -514,6 +514,10 @@ function accountForm(a) {
       <div class="col"><span class="lbl">Max clips per day</span><input type="number" id="a-max" min="1" max="10" value="${a.max_clips_per_day || 4}"></div>
       <div class="col" style="grid-column:1/-1"><span class="lbl">Daily posting times (24h, comma separated)</span><input type="text" id="a-slots" value="${esc(slots)}" placeholder="11:00, 15:00, 19:00, 22:00"></div>
     </div>
+    <div class="lbl" style="margin:14px 0 6px">Login: this account's own Chrome profile</div>
+    <div class="row"><select id="a-prof" style="flex:1;min-width:220px"><option value="">Normal browser (whatever is logged in)</option>${(PUB.profiles || []).map(p => `<option value="${esc(p.dir)}" ${a.chrome_profile === p.dir ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
+      ${!PUB.adding && a.chrome_profile ? `<button class="btn" id="a-login">Open it to log in</button>` : ""}</div>
+    <p class="small muted" style="margin:6px 0 0">${(PUB.profiles || []).length ? "" : "No Chrome profiles found (Studio must run on your Windows PC). "}Make one Chrome profile per account (Chrome → your picture → Add), log in there once to that account's YouTube, TikTok, Instagram and Facebook, then pick it here. Studio opens every site inside that profile, already logged in – nothing is stored in Studio.</p>
     <div class="lbl" style="margin:14px 0 6px">Platforms this account posts to</div>
     <div class="col" style="gap:8px">${PLATS.map(([k, l, ic]) => `<div class="row"><label class="row" style="width:190px;cursor:pointer"><input type="checkbox" data-pl="${k}" ${(pl[k] || {}).enabled ? "checked" : ""}> ${ic} ${l}</label>
       <input type="text" data-hd="${k}" value="${esc((pl[k] || {}).handle || "")}" placeholder="your @handle / channel name (just a label)" style="flex:1;min-width:200px"></div>`).join("")}</div>
@@ -560,6 +564,7 @@ function postCard(p) {
     <video class="q-thumb" src="${media(p.clip_path)}#t=0.1" preload="metadata" muted playsinline></video>
     <div class="col" style="gap:8px;min-width:0">
       <div class="row"><b class="ttl" style="max-width:340px">${esc(p.title)}</b><span class="chip ${ESTATUS[p.status] || ""}">${esc(p.status)}</span>
+        <button class="btn sm" data-openall="${esc(p.id)}" title="Opens every site of this account in its Chrome profile and shows the file in Explorer">Open all sites + file</button>
         <span class="small ${late ? "" : "muted"}" style="${late ? "color:var(--warn)" : ""}">${esc(p.account_name || "")} · ${timeLabel(p.scheduled_time)}${late ? " · time has passed" : ""}</span></div>
       <div class="row">${plats.map(([k, s]) => { const [t, cl] = PSTATUS[s.status] || [s.status, ""]; const ic = PLATS.find(x => x[0] === k)[2];
         return `<button class="plat-btn ${openKey === k ? "on" : ""}" data-open="${esc(p.id)}:${k}" title="${esc(s.note || "")}">${ic} ${esc(PLATS.find(x => x[0] === k)[1])} <span class="chip ${cl}">${t}</span></button>`; }).join("")}</div>
@@ -579,7 +584,7 @@ function platPanel(p, k) {
     ${k === "youtube" ? `<div class="row"><input type="text" readonly value="${esc(s.title)}" style="flex:1;min-width:200px"><button class="btn sm" data-copyt="${esc(p.id)}:${k}">Copy title</button></div>` : ""}
     <textarea readonly class="capbox" rows="3" style="width:100%">${esc(s.text)}</textarea>
     <div class="row"><button class="btn sm" data-copy="${esc(p.id)}:${k}">Copy ${k === "youtube" ? "description" : "caption"}</button>
-      <button class="btn sm" data-site="${esc(s.link)}">Open ${SITE[k]} ↗</button>
+      <button class="btn sm" data-site="${esc(s.link)}" data-aid="${esc(p.account_id)}">Open ${SITE[k]} ↗</button>
       <button class="btn sm" data-reveal="${esc(p.clip_path)}">Show the file</button>
       ${s.status === "FAILED" ? `<button class="btn sm" data-act="${esc(p.id)}:${k}:retry">Try again</button>` : ""}
       ${s.status === "POSTED" ? `<button class="btn sm ghost" data-act="${esc(p.id)}:${k}:unposted">Not posted yet</button>` : manual ? `<button class="btn sm pri" data-act="${esc(p.id)}:${k}:posted">I posted it ✓</button>` : ""}</div>
@@ -587,6 +592,17 @@ function platPanel(p, k) {
     ${s.note && s.status !== "PLANNED" ? `<div class="small" style="color:${s.status === "FAILED" ? "var(--bad)" : "var(--mu)"}">${esc(s.note)}</div>` : ""}
     ${s.url ? `<div class="small"><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url)}</a></div>` : ""}
   </div>`;
+}
+
+function openSites(aid, urls) {
+  urls = [...new Set(urls)];
+  const acc = (S.accounts || []).find(a => a.id === aid);
+  if (acc && acc.chrome_profile) {
+    api("/api/social/open", { method: "POST", body: { account_id: aid, urls } }).catch(e => toast(errMsg(e), true));
+  } else {
+    urls.forEach(u => window.open(u, "_blank", "noopener"));
+    toast("Opened in your normal browser. Pick a Chrome profile for this account (Edit) to open it already logged in.");
+  }
 }
 
 function bindPublish(acc, editing) {
@@ -604,10 +620,11 @@ function bindPublish(acc, editing) {
     if (!Object.values(platforms).some(p => p.enabled)) return toast("Switch on at least one platform", true);
     try {
       const r = await api("/api/social/accounts", { method: "POST", body: { id: PUB.adding ? null : editing.id, name, max_clips_per_day: +$("#a-max").value || 4,
-        schedule_slots: slots.map(s => s.replace(/^(\d):/, "0$1:")).sort(), platforms } });
+        schedule_slots: slots.map(s => s.replace(/^(\d):/, "0$1:")).sort(), platforms, chrome_profile: $("#a-prof").value } });
       PUB.acct = r.id; PUB.adding = false; PUB.edit = false; toast("Account saved"); redo();
     } catch (e) { toast(errMsg(e), true); }
   };
+  const lg = $("#a-login"); if (lg) lg.onclick = async () => { try { await api("/api/social/open", { method: "POST", body: { account_id: editing.id, login: true } }); toast("Chrome opened with that profile – log in on each tab (once)."); } catch (e) { toast(errMsg(e), true); } };
   const del = $("#a-del"); if (del) del.onclick = async () => { if (!confirm(`Delete "${editing.name}" and its saved logins? Its plan entries stay.`)) return; await api("/api/social/accounts/" + editing.id, { method: "DELETE" }); PUB.acct = null; PUB.edit = false; redo(); };
 
   const ytc = $("#yt-connect"); if (ytc) ytc.onclick = async () => { try { await api(`/api/social/accounts/${editing.id}/connect/youtube`, { method: "POST" }); toast("Finish signing in on the Google page that opened, then come back."); setTimeout(redo, 20000); } catch (e) { toast(errMsg(e), true); } };
@@ -655,7 +672,12 @@ function bindPublish(acc, editing) {
   const find = key => { const [pid, k] = key.split(":"); const p = S.scheduleQueue.find(x => x.id === pid); return p && p.platforms[k]; };
   $$("[data-copy]").forEach(b => b.onclick = async () => { await navigator.clipboard.writeText(find(b.dataset.copy).text); toast("Copied"); });
   $$("[data-copyt]").forEach(b => b.onclick = async () => { await navigator.clipboard.writeText(find(b.dataset.copyt).title); toast("Title copied"); });
-  $$("[data-site]").forEach(b => b.onclick = () => window.open(b.dataset.site, "_blank", "noopener"));
+  $$("[data-site]").forEach(b => b.onclick = () => openSites(b.dataset.aid, [b.dataset.site]));
+  $$("[data-openall]").forEach(b => b.onclick = async () => {
+    const p = S.scheduleQueue.find(x => x.id === b.dataset.openall); if (!p) return;
+    api("/api/social/reveal", { method: "POST", body: { path: p.clip_path } }).catch(() => {});
+    openSites(p.account_id, Object.values(p.platforms).map(s => s.link));
+  });
   $$("[data-reveal]").forEach(b => b.onclick = async () => { try { await api("/api/social/reveal", { method: "POST", body: { path: b.dataset.reveal } }); } catch (e) { toast(errMsg(e), true); } });
   $$("[data-act]").forEach(b => b.onclick = async () => { const [pid, k, a] = b.dataset.act.split(":"); try { await api(`/api/social/queue/${pid}/${k}/${a}`, { method: "POST" }); renderSchedule(true); } catch (e) { toast(errMsg(e), true); } });
   $$("[data-del]").forEach(b => b.onclick = async () => { if (!confirm("Remove this post from the plan? Anything already uploaded to a site stays there.")) return; await api("/api/social/queue/" + b.dataset.del, { method: "DELETE" }); renderSchedule(true); });

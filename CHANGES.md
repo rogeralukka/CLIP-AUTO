@@ -4,6 +4,14 @@ This document provides a comprehensive log of all architectural improvements, up
 
 ---
 
+## 2026-11-18 (night 3b): one login per account (its own Chrome profile) + "Open all sites"
+
+- Each account can be tied to its own Chrome profile (dropdown read from Chrome's profile list). Log in once in that
+  profile to the account's YouTube / TikTok / Instagram / Facebook; Studio then opens every site inside it, already
+  logged in. Nothing is stored in Studio, and no API keys are needed. "Open it to log in" opens all the sign-in pages.
+- Each planned post has "Open all sites + file": opens every platform's upload page of that account in its profile and
+  selects the clip in Explorer. Only the platforms' own upload/login URLs can be opened.
+
 ## 2026-11-18 (night 3): Publish rebuilt - honest statuses, simple screen, secrets protected
 
 Audit of the first Publish & Schedule version (platform rules checked against current docs) and fixes:

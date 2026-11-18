@@ -80,6 +80,14 @@ class TestServerSocial(unittest.TestCase):
         r = self.client.delete(f"/api/social/accounts/{aid}/connect/facebook")
         self.assertFalse(r.json()["connected"]["facebook"])
 
+    def test_open_sites_endpoint(self):
+        aid = self.add_account()
+        r = self.client.post("/api/social/open", json={"account_id": aid, "login": True})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["opened"], 0)       # no profile set -> the page opens the links itself
+        self.assertEqual(self.client.post("/api/social/open", json={"account_id": "nope", "urls": []}).status_code, 404)
+        self.assertEqual(self.client.post("/api/social/open", json={"account_id": aid, "urls": ["https://evil.example"]}).status_code, 400)
+
     def test_custom_clip_upload(self):
         files = {"file": ("test_upload.mp4", io.BytesIO(b"\x00\x00\x00\x18ftypmp42dummy"), "video/mp4")}
         r = self.client.post("/api/social/upload-file", files=files)
