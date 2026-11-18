@@ -1,0 +1,45 @@
+name: GTA 6 & RP Streamer Clips
+streamer: FiveM / GTA Streamers
+platform: twitch
+min_clip_length: 15
+max_clip_length: 50
+preset: classic_yellow
+overlay: null
+required_hashtags:
+- '#gta6'
+- '#gtarp'
+- '#gamingclips'
+required_disclosure: ''
+allowed_upload_platforms:
+- tiktok
+- youtube
+- instagram
+rules_note: 'Bounty: GTA 6 & RP Streamer Clips (Vyro)
+
+  Payout: $2.50 CPM ($2.50 / 1K views)
+
+  Link: https://vyro.com
+
+
+  Funny RP encounters, police chases, and crazy stunts. Submit posted links on Vyro
+  dashboard.'
+risk_words:
+- leak
+- leaked
+- spoiler
+- spoilers
+- banned
+- dmca
+- copyright
+- slur
+- n-word
+- scam
+- cheat
+- hack
+- dox
+- doxxed
+- address
+assigned_account_id: null
+bounty_url: https://vyro.com
+payout: $2.50 CPM ($2.50 / 1K views)
+bounty_source: vyro

@@ -56,8 +56,8 @@
     "url": "https://vyro.com",
     "rules_note": "Funny RP encounters, police chases, and crazy stunts. Submit posted links on Vyro dashboard.",
     "assigned_account_id": null,
-    "is_imported": false,
-    "campaign_id": null
+    "is_imported": true,
+    "campaign_id": "vyro_gta_streamers"
   },
   {
     "id": "discord_kai_cenat",
