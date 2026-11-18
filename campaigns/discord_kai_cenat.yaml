@@ -1,0 +1,45 @@
+name: Kai Cenat & AMP Monthly Clipper Rewards
+streamer: Kai Cenat
+platform: twitch
+min_clip_length: 15
+max_clip_length: 60
+preset: classic_yellow
+overlay: null
+required_hashtags:
+- '#kaicenat'
+- '#amp'
+- '#twitchclips'
+required_disclosure: ''
+allowed_upload_platforms:
+- tiktok
+- youtube
+- instagram
+rules_note: 'Bounty: Kai Cenat & AMP Monthly Clipper Rewards (Streamer Discord)
+
+  Payout: $10,000 Pool (Top 20 Leaderboard)
+
+  Link: https://discord.gg/kaicenat
+
+
+  Monthly bounty pool for highest view counts. Submit links in #clipper-rewards channel
+  on Discord.'
+risk_words:
+- leak
+- leaked
+- spoiler
+- spoilers
+- banned
+- dmca
+- copyright
+- slur
+- n-word
+- scam
+- cheat
+- hack
+- dox
+- doxxed
+- address
+assigned_account_id: acc_1795006821
+bounty_url: https://discord.gg/kaicenat
+payout: $10,000 Pool (Top 20 Leaderboard)
+bounty_source: discord

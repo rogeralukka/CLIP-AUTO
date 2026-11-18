@@ -23,6 +23,10 @@ from pydantic import BaseModel
 ROOT = os.path.dirname(os.path.abspath(__file__))
 os.chdir(ROOT)
 
+from clipper.bounties import (  # noqa: E402
+    delete_bounty, get_bounty, import_bounty_as_campaign,
+    link_bounty_account, load_bounties, upsert_bounty,
+)
 from clipper.campaigns import delete_campaign, list_campaigns, load_campaign, save_campaign  # noqa: E402
 from clipper.config import load_config, save_user_override  # noqa: E402
 from clipper.judge import ensure_ollama_running, is_ollama_available  # noqa: E402
@@ -636,6 +640,65 @@ def clip_library():
                 out.append({"path": rel, "name": n, "title": os.path.splitext(n)[0].replace("_", " "), "job": None, "kept": True,
                             "meta": {}, "used": os.path.normpath(full).lower() in taken})
     return out
+
+
+# ----------------------------------------------------------------- bounties & rewards
+class BountyIn(BaseModel):
+    id: Optional[str] = None
+    title: str
+    streamer: Optional[str] = ""
+    source: Optional[str] = "custom"
+    source_name: Optional[str] = "Custom / Discord"
+    payout_rate: Optional[str] = "$3.00 CPM"
+    pool_size: Optional[str] = ""
+    budget_remaining: Optional[str] = ""
+    status: Optional[str] = "ACTIVE"
+    platform: Optional[str] = "twitch"
+    allowed_platforms: Optional[List[str]] = ["tiktok", "youtube", "instagram"]
+    required_hashtags: Optional[List[str]] = []
+    required_disclosure: Optional[str] = ""
+    min_clip_length: Optional[int] = 15
+    max_clip_length: Optional[int] = 60
+    url: Optional[str] = ""
+    rules_note: Optional[str] = ""
+    assigned_account_id: Optional[str] = None
+
+
+class LinkAccountIn(BaseModel):
+    account_id: Optional[str] = None
+
+
+@app.get("/api/bounties")
+def get_bounties():
+    return load_bounties()
+
+
+@app.post("/api/bounties")
+def create_or_update_bounty(body: BountyIn):
+    data = (body.model_dump if hasattr(body, "model_dump") else body.dict)()
+    bid = upsert_bounty(data)
+    return {"id": bid, "bounty": get_bounty(bid)}
+
+
+@app.delete("/api/bounties/{bid}")
+def remove_bounty(bid: str):
+    return {"ok": delete_bounty(bid)}
+
+
+@app.post("/api/bounties/{bid}/import")
+def import_bounty(bid: str, body: Optional[LinkAccountIn] = None):
+    acc_id = body.account_id if body else None
+    try:
+        camp = import_bounty_as_campaign(bid, account_id=acc_id)
+        return {"ok": True, "campaign": camp}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/bounties/{bid}/link-account")
+def link_bounty(bid: str, body: LinkAccountIn):
+    ok = link_bounty_account(bid, body.account_id)
+    return {"ok": ok, "bounty": get_bounty(bid)}
 
 
 def _start_ollama_in_background():

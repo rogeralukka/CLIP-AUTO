@@ -1,0 +1,212 @@
+[
+  {
+    "id": "vyro_creator_network",
+    "title": "MrBeast Gaming & Creator Distribution",
+    "streamer": "Creator Network",
+    "source": "vyro",
+    "source_name": "Vyro",
+    "payout_rate": "$3.00 CPM ($3.00 / 1K views)",
+    "pool_size": "$50,000 Pool",
+    "budget_remaining": "$34,200 remaining",
+    "status": "HOT",
+    "platform": "youtube",
+    "allowed_platforms": [
+      "tiktok",
+      "youtube",
+      "instagram"
+    ],
+    "required_hashtags": [
+      "#mrbeast",
+      "#gaming",
+      "#shorts"
+    ],
+    "required_disclosure": "",
+    "min_clip_length": 15,
+    "max_clip_length": 60,
+    "url": "https://vyro.com",
+    "rules_note": "Cut engaging vertical gaming shorts. Payout is calculated per 1,000 verified views across TikTok, Shorts, and Reels.",
+    "assigned_account_id": null,
+    "is_imported": false,
+    "campaign_id": null
+  },
+  {
+    "id": "vyro_gta_streamers",
+    "title": "GTA 6 & RP Streamer Clips",
+    "streamer": "FiveM / GTA Streamers",
+    "source": "vyro",
+    "source_name": "Vyro",
+    "payout_rate": "$2.50 CPM ($2.50 / 1K views)",
+    "pool_size": "$25,000 Pool",
+    "budget_remaining": "$18,500 remaining",
+    "status": "ACTIVE",
+    "platform": "twitch",
+    "allowed_platforms": [
+      "tiktok",
+      "youtube",
+      "instagram"
+    ],
+    "required_hashtags": [
+      "#gta6",
+      "#gtarp",
+      "#gamingclips"
+    ],
+    "required_disclosure": "",
+    "min_clip_length": 15,
+    "max_clip_length": 50,
+    "url": "https://vyro.com",
+    "rules_note": "Funny RP encounters, police chases, and crazy stunts. Submit posted links on Vyro dashboard.",
+    "assigned_account_id": null,
+    "is_imported": true,
+    "campaign_id": "vyro_gta_streamers"
+  },
+  {
+    "id": "discord_kai_cenat",
+    "title": "Kai Cenat & AMP Monthly Clipper Rewards",
+    "streamer": "Kai Cenat",
+    "source": "discord",
+    "source_name": "Streamer Discord",
+    "payout_rate": "$10,000 Pool (Top 20 Leaderboard)",
+    "pool_size": "$10,000 Monthly Pool",
+    "budget_remaining": "Active this month",
+    "status": "HOT",
+    "platform": "twitch",
+    "allowed_platforms": [
+      "tiktok",
+      "youtube",
+      "instagram"
+    ],
+    "required_hashtags": [
+      "#kaicenat",
+      "#amp",
+      "#twitchclips"
+    ],
+    "required_disclosure": "",
+    "min_clip_length": 15,
+    "max_clip_length": 60,
+    "url": "https://discord.gg/kaicenat",
+    "rules_note": "Monthly bounty pool for highest view counts. Submit links in #clipper-rewards channel on Discord.",
+    "assigned_account_id": "acc_1795006821",
+    "is_imported": true,
+    "campaign_id": "discord_kai_cenat"
+  },
+  {
+    "id": "discord_adin_ross",
+    "title": "Adin Ross Live Stream Clipper Pool",
+    "streamer": "Adin Ross",
+    "source": "discord",
+    "source_name": "Streamer Discord",
+    "payout_rate": "$15,000 Pool (PPV + Leaderboard)",
+    "pool_size": "$15,000 Monthly Pool",
+    "budget_remaining": "Active this month",
+    "status": "HOT",
+    "platform": "kick",
+    "allowed_platforms": [
+      "tiktok",
+      "youtube",
+      "instagram"
+    ],
+    "required_hashtags": [
+      "#adinross",
+      "#kickstream",
+      "#adinlive"
+    ],
+    "required_disclosure": "",
+    "min_clip_length": 15,
+    "max_clip_length": 60,
+    "url": "https://discord.gg/adin",
+    "rules_note": "Post viral Kick highlights to TikTok/Shorts. Submit video links to the Adin Discord clipping bot.",
+    "assigned_account_id": "acc_adin_hub",
+    "is_imported": true,
+    "campaign_id": "discord_adin_ross"
+  },
+  {
+    "id": "whop_kick_clippers",
+    "title": "Kick Creator Rewards & Top Stream Highlights",
+    "streamer": "Kick Top Streamers",
+    "source": "whop",
+    "source_name": "Whop Rewards",
+    "payout_rate": "$3.50 CPM ($3.50 / 1K views)",
+    "pool_size": "$20,000 Monthly Pool",
+    "budget_remaining": "$14,000 remaining",
+    "status": "ACTIVE",
+    "platform": "kick",
+    "allowed_platforms": [
+      "tiktok",
+      "youtube",
+      "instagram",
+      "facebook"
+    ],
+    "required_hashtags": [
+      "#kickstreaming",
+      "#streamclips",
+      "#viral"
+    ],
+    "required_disclosure": "",
+    "min_clip_length": 15,
+    "max_clip_length": 60,
+    "url": "https://whop.com",
+    "rules_note": "Content Rewards bounty for Kick livestream clips driving external discovery. Payouts verified via Whop.",
+    "assigned_account_id": null,
+    "is_imported": false,
+    "campaign_id": null
+  },
+  {
+    "id": "cliptech_subathon",
+    "title": "Subathon & Live Stream Bounties",
+    "streamer": "Subathon Streamers",
+    "source": "cliptech",
+    "source_name": "Clip.tech",
+    "payout_rate": "$2.80 CPM ($2.80 / 1K views)",
+    "pool_size": "$12,000 Pool",
+    "budget_remaining": "$7,500 remaining",
+    "status": "ACTIVE",
+    "platform": "twitch",
+    "allowed_platforms": [
+      "tiktok",
+      "youtube",
+      "instagram"
+    ],
+    "required_hashtags": [
+      "#subathon",
+      "#liveclips"
+    ],
+    "required_disclosure": "",
+    "min_clip_length": 15,
+    "max_clip_length": 45,
+    "url": "https://clip.tech",
+    "rules_note": "Browse briefs, opt in, and get paid weekly to PayPal based on verified views.",
+    "assigned_account_id": null,
+    "is_imported": false,
+    "campaign_id": null
+  },
+  {
+    "id": "discord_ishowspeed",
+    "title": "IShowSpeed Daily Hype Moments",
+    "streamer": "IShowSpeed",
+    "source": "discord",
+    "source_name": "Streamer Discord",
+    "payout_rate": "$8,000 Pool (Monthly Payout)",
+    "pool_size": "$8,000 Monthly Pool",
+    "budget_remaining": "Active this month",
+    "status": "ACTIVE",
+    "platform": "youtube",
+    "allowed_platforms": [
+      "tiktok",
+      "youtube",
+      "instagram"
+    ],
+    "required_hashtags": [
+      "#ishowspeed",
+      "#speedclips",
+      "#viralshorts"
+    ],
+    "required_disclosure": "",
+    "min_clip_length": 15,
+    "max_clip_length": 60,
+    "url": "https://discord.gg/ishowspeed",
+    "rules_note": "Speed stream reaction and gaming moments. Submit links in Speed Discord clippers channel.",
+    "assigned_account_id": null,
+    "is_imported": false,
+    "campaign_id": null
+  }
+]

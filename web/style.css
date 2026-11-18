@@ -170,4 +170,14 @@ details.adv summary{cursor:pointer;color:var(--mu);font-size:13px}
 .adv-row{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:10px 0;border-bottom:1px solid var(--line)}.adv-row .row{width:100%;flex-wrap:nowrap}.adv-row input[type=text],.adv-row input[type=password]{width:auto}
 .adv-row p{margin:0}
 
+/* bounties */
+.bounties-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px}
+.bounty-card{background:var(--s1);border:1px solid var(--line);border-radius:var(--r);padding:18px;display:flex;flex-direction:column;gap:12px;transition:.15s;position:relative}
+.bounty-card:hover{border-color:var(--line2)}
+.bounty-card.hot{border-color:#ff4f8b44;background:linear-gradient(135deg,#ff4f8b08,transparent 60%),var(--s1)}
+.bounty-card.linked{border-color:#d7ff3a55}
+.bounty-payout{font-size:16px;font-weight:800;color:var(--ac);letter-spacing:-.02em}
+.bounty-pool{font-size:12px;font-weight:600;color:var(--mu)}
+.bounty-acct-box{background:var(--s2);border:1px solid var(--line);border-radius:var(--r2);padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+
 @media (max-width:1100px){.grid2{grid-template-columns:1fr}.mom{grid-template-columns:28px 1fr}.mom .sigs{grid-column:2}}

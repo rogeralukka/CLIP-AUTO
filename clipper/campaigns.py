@@ -45,6 +45,10 @@ def load_campaign(yaml_path_or_name: str) -> Dict[str, Any]:
         "allowed_upload_platforms": data.get("allowed_upload_platforms", []),
         "rules_note": data.get("rules_note", ""),
         "risk_words": data.get("risk_words", DEFAULT_RISK_WORDS),
+        "assigned_account_id": data.get("assigned_account_id", None),
+        "bounty_url": data.get("bounty_url", ""),
+        "payout": data.get("payout", ""),
+        "bounty_source": data.get("bounty_source", ""),
         "file_path": os.path.abspath(target_path),
     }
     return campaign
