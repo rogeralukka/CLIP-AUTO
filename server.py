@@ -557,11 +557,12 @@ def live_status():
                             c_data["streamer_name"] = "jynxzi"
                             c_data["streamer_platform"] = "twitch"
                         elif "twitch" in fn.lower() or "twitch.tv" in s_url:
-                            m_tw = re.search(r"twitch_([a-zA-Z0-9_\-]+)_", fn)
+                            m_tw = re.search(r"twitch_([a-zA-Z0-9_\-]+?)_\d{6}", fn)
                             c_data["streamer_name"] = m_tw.group(1) if m_tw else "twitch"
                             c_data["streamer_platform"] = "twitch"
                         elif "yt_" in fn.lower() or "youtube" in fn.lower() or "youtube.com" in s_url:
-                            c_data["streamer_name"] = "youtube"
+                            m_yt = re.search(r"(?:yt|youtube)_([a-zA-Z0-9_\-]+?)_\d{6}", fn)
+                            c_data["streamer_name"] = m_yt.group(1) if m_yt else "youtube"
                             c_data["streamer_platform"] = "youtube"
                         else:
                             c_data["streamer_name"] = "stream"
