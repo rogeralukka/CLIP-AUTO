@@ -100,15 +100,20 @@ def transcribe_full_audio(
         abs_json = os.path.abspath(output_json)
         os.makedirs(os.path.dirname(abs_json), exist_ok=True)
         if os.path.isfile(abs_json) and os.path.getsize(abs_json) > 10:
-            try:
-                with open(abs_json, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if data.get("words") is not None:
-                        logger.info(f"Loaded {len(data['words'])} words from full transcript cache: {abs_json}")
-                        data["words"] = collapse_repeats(data["words"])
-                        return data
-            except Exception as e:
-                logger.warning(f"Failed to read full transcript cache {abs_json}: {e}. Re-transcribing.")
+            audio_mtime = os.path.getmtime(abs_audio) if os.path.isfile(abs_audio) else 0.0
+            json_mtime = os.path.getmtime(abs_json)
+            if audio_mtime <= json_mtime:
+                try:
+                    with open(abs_json, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if data.get("words") is not None:
+                            logger.info(f"Loaded {len(data['words'])} words from full transcript cache: {abs_json}")
+                            data["words"] = collapse_repeats(data["words"])
+                            return data
+                except Exception as e:
+                    logger.warning(f"Failed to read full transcript cache {abs_json}: {e}. Re-transcribing.")
+            else:
+                logger.info(f"Audio file '{abs_audio}' modified after transcript cache ({audio_mtime:.1f} > {json_mtime:.1f}). Cache invalidated.")
 
     cfg = load_config()
     vad_on = cfg.get("audio", {}).get("vad_filter", True)

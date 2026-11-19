@@ -12,7 +12,7 @@ signals:
   max_clips_per_hour: 10         # Per-hour maximum quota cap per streamer (max 10 clips/hr)
   hourly_quota_buffer: 3         # Flexible buffer slots (+2 to +3) so high-scoring great moments aren't discarded
   buffer_score_threshold: 6.5    # Minimum virality score required to use a buffer slot beyond base cap
-  default_min_clip_length: 45.0  # Target minimum clip length (captures full setup & aftermath; no fragments)
+  default_min_clip_length: 30.0  # Hard floor minimum clip length (no clips under 30s; target 60-180s)
   default_max_clip_length: 240.0 # Maximum clip length in seconds (up to 4 minutes for complete scenes & cutscenes)
   pre_peak_lead_seconds: 45.0    # Pre-roll lead time to capture full story buildup & context
   post_peak_trail_seconds: 60.0  # Post-roll trail time to capture full reaction aftermath

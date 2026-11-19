@@ -471,19 +471,27 @@ class LiveStreamClipper:
             logger.info(f"Live buffer warming up: {curr_duration:.1f}s captured (need >= 30s)...")
             return []
 
-        # Start from self.last_analyzed_time (0.0 when stream starts).
-        # We step forward through the stream in chunks up to self.analysis_window_seconds.
-        overlap = 60.0 if self.last_analyzed_time > 0.0 else 0.0
-        start_offset = max(0.0, self.last_analyzed_time - overlap)
-
-        available_dur = curr_duration - start_offset
-        if available_dur < 25.0 and self.last_analyzed_time > 0.0:
-            self._set_state("idle", f"Analyzed to {int(self.last_analyzed_time)}s. Listening at live edge ({int(curr_duration)}s buffer)...")
-            logger.debug("Not enough new buffer to analyze yet (need >= 25s).")
-            return []
-
-        chunk_len = min(float(self.analysis_window_seconds), available_dur)
-        end_offset = start_offset + chunk_len
+        # Determine analysis window: lookback up to 360s (6 min) so story hunter has ample context for 60-180s clips
+        lookback_window = min(360.0, float(self.analysis_window_seconds))
+        if self.last_analyzed_time == 0.0:
+            start_offset = 0.0
+            chunk_len = min(lookback_window, curr_duration)
+            end_offset = chunk_len
+        elif self.last_analyzed_time < curr_duration - lookback_window:
+            # Catching up through earlier buffer: step forward with 60s overlap
+            start_offset = max(0.0, self.last_analyzed_time - 60.0)
+            chunk_len = min(lookback_window, curr_duration - start_offset)
+            end_offset = start_offset + chunk_len
+        else:
+            # At live edge: maintain full 360s context window looking back from edge
+            new_edge_buffer = curr_duration - self.last_analyzed_time
+            if new_edge_buffer < 25.0:
+                self._set_state("idle", f"Analyzed to {int(self.last_analyzed_time)}s. Listening at live edge ({int(curr_duration)}s buffer)...")
+                logger.debug("Not enough new buffer to analyze yet (need >= 25s).")
+                return []
+            start_offset = max(0.0, curr_duration - lookback_window)
+            end_offset = curr_duration
+            chunk_len = end_offset - start_offset
 
         self._set_state("analyzing", f"Scanning loudness & hype curve ({int(start_offset)}s -> {int(end_offset)}s of {int(curr_duration)}s buffer)...")
 
@@ -564,15 +572,19 @@ class LiveStreamClipper:
                 max_clip_length=float((self.campaign or {}).get("max_clip_length") or 180.0),
             )
 
-        # Back to buffer time; skip moments still unfolding at the very live edge
+        # Back to buffer time; skip moments still unfolding at the very live edge or already completed in previous turns
         from .signals import dedupe_moments
         new_moments = []
         is_live_edge = (end_offset >= curr_duration - 5.0)
         for m in found:
-            m["start"] = round(m["start"] + start_offset, 2)
-            m["end"] = round(m["end"] + start_offset, 2)
-            if is_live_edge and m["end"] > curr_duration - 3.0:
+            m_start = round(m["start"] + start_offset, 2)
+            m_end = round(m["end"] + start_offset, 2)
+            if is_live_edge and m_end > curr_duration - 3.0:
                 continue
+            if self.last_analyzed_time > 0 and m_end <= self.last_analyzed_time - 15.0:
+                continue
+            m["start"] = m_start
+            m["end"] = m_end
             new_moments.append(m)
         new_moments = dedupe_moments(new_moments, vod_id=self.live_vod_id, downloads_dir="downloads")
 

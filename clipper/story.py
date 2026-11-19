@@ -365,7 +365,7 @@ def extract_action_candidates(
         before=45,
         after=60,
         window=5,
-        min_clip_length=45.0,
+        min_clip_length=30.0,
         max_clip_length=240.0,
     )
 
@@ -596,8 +596,11 @@ def hunt_story_candidates_and_pool(
     """Complete Step 2 Pipeline: Story Hunter + Action Pool + Unified 4-Pillar Ranking."""
     logger.info(f"Starting Story Hunter + Action Pool pipeline on slice ({slice_duration:.1f}s)...")
 
-    # 1. Transcribe the entire slice with word timestamps (cached to disk)
-    transcript_cache = slice_wav.replace(".wav", "_transcript.json")
+    # 1. Transcribe the entire slice with word timestamps (cached to disk per slice range)
+    if slice_offset_sec > 0 or slice_duration > 0:
+        transcript_cache = slice_wav.replace(".wav", f"_{int(slice_offset_sec)}s_{int(slice_duration)}s_transcript.json")
+    else:
+        transcript_cache = slice_wav.replace(".wav", "_transcript.json")
     transcript_data = transcribe_full_audio(slice_wav, use_cpu=False, output_json=transcript_cache)
     words = transcript_data.get("words", [])
 

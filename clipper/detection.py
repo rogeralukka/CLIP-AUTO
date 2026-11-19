@@ -296,7 +296,7 @@ def find_moments(
     full_transcript_data: Optional[Dict[str, Any]] = None,
     heatmap_data: Optional[Any] = None,
     vod_id: Optional[str] = None,
-    min_clip_length: float = 45.0,
+    min_clip_length: float = 30.0,
     max_clip_length: float = 240.0,
     progress_cb: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
