@@ -12,12 +12,14 @@ signals:
   max_clips_per_hour: 10         # Per-hour maximum quota cap per streamer (max 10 clips/hr)
   hourly_quota_buffer: 3         # Flexible buffer slots (+2 to +3) so high-scoring great moments aren't discarded
   buffer_score_threshold: 6.5    # Minimum virality score required to use a buffer slot beyond base cap
-  default_min_clip_length: 30.0  # Minimum clip length in seconds (strict cap: no clips under 30s)
-  default_max_clip_length: 180.0 # Maximum clip length in seconds (up to 3 minutes for Shorts/TikTok)
+  default_min_clip_length: 45.0  # Target minimum clip length (captures full setup & aftermath; no fragments)
+  default_max_clip_length: 240.0 # Maximum clip length in seconds (up to 4 minutes for complete scenes & cutscenes)
+  pre_peak_lead_seconds: 45.0    # Pre-roll lead time to capture full story buildup & context
+  post_peak_trail_seconds: 60.0  # Post-roll trail time to capture full reaction aftermath
   rolling_window_seconds: 600    # 10 minutes baseline window for robust z-score
-  merge_gap_seconds: 15          # Merge nearby peak moments within this gap
-  max_lead_seconds: 5.0          # Max lead time to snap to sentence boundary
-  max_trail_seconds: 5.0         # Max trail time to snap to sentence boundary
+  merge_gap_seconds: 25          # Merge nearby peak moments within this gap
+  max_lead_seconds: 15.0         # Max lead time to snap to sentence boundary
+  max_trail_seconds: 25.0        # Max trail time to snap to sentence boundary
   weights:
     chat_rate: 0.25
     chat_keywords: 0.30
@@ -46,11 +48,11 @@ llm:
   retry_count: 1
 
 facecam:
-  sample_interval_seconds: 1.0   # Sample 1 frame/sec for face detection
-  presence_threshold: 0.60       # Use split layout if face presence >= 60%
+  sample_interval_seconds: 0.5   # Sample 2 frames/sec for smooth continuous face tracking
+  presence_threshold: 0.30       # Use split/irl layout if face presence >= 30% (robust to active motion)
   box_padding: 1.0               # Expansion around the face (1.0 = webcam-sized: head + shoulders)
-  fullscreen_face_ratio: 0.22    # Face taller than this share of the frame => full-screen cam ("face" layout)
-  facecam_max_drift: 0.03        # A corner facecam barely moves; a face that wanders more is a person on camera (IRL)
+  fullscreen_face_ratio: 0.20    # Face taller than this share of the frame => full-screen cam ("irl" layout)
+  facecam_max_drift: 0.10        # Normal streamer motion tolerance (~10% frame width drift)
   split_facecam_height: 640      # Height of facecam area in 1080x1920 split layout
   gameplay_blur_background: true # Blur background for gameplay fit-to-width
   gameplay_aspect: "16:9"        # Framed layout: "16:9" = whole picture in the middle band; "4:3"/"1:1" zoom in

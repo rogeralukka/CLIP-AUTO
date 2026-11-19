@@ -190,9 +190,15 @@ def build_story_prompt(
     return f"""You are a master viral clip hunter analyzing a continuous {window_duration_sec:.0f}s live stream transcript window.
 Identify UP TO 2 candidate short-form video moments (TikTok / Shorts / Reels) that have a complete story arc.
 
-RULES FOR CANDIDATE SELECTION:
-1. Every candidate MUST have a HOOK (setup/conflict in first 3s) and an internal PAYOFF (punchline/climax/reaction).
-2. DURATION CONSTRAINT: Candidate clips MUST be AT LEAST 30 SECONDS long (between 30s and 120s). Do NOT select short 1-20s one-liners or fragments without the surrounding story context, setup, and aftermath.
+CRITICAL RULES FOR CANDIDATE SELECTION:
+1. COMPLETE NARRATIVE CONTEXT (The Speedy Boykins Standard):
+   - A great clip is never a 15-30s isolated fragment or soundbite. An isolated yell or one-liner without the backstory is boring.
+   - ALWAYS capture the complete story arc from setup to aftermath:
+     a) Pre-roll setup / buildup: what triggered the scene (NPC dialogue, Speed reading chat, setting a goal, entering an area, arguing, a challenge).
+     b) The escalating action / interaction: the struggle, banter, anticipation, or tension.
+     c) The peak climax: the crazy reaction, scream, jump-scare, explosion, hilarity, or fail.
+     d) The post-roll aftermath: the streamer laughing, gasping, talking to chat, or reacting to what just happened.
+2. DURATION CONSTRAINT: Target clips between 60 to 180 seconds long (up to 240 seconds for epic cutscenes, GTA missions, and extended bits). NEVER select short 1-30s fragments. Always encompass the full context.
 3. Word index precision: Specify start_word_index and end_word_index using the bracketed numbers like [0], [1].
 4. Standalone test: A stranger scrolling TikTok must understand the situation with ZERO prior stream context.
 5. Score each pillar strictly from 0.0 to 10.0:
@@ -200,7 +206,7 @@ RULES FOR CANDIDATE SELECTION:
    - flow: How smoothly the story progresses without boring lulls.
    - emotion: streamer laughter, shock, rage, triumph, panic, or awe.
    - standalone: complete self-contained sense.
-5. Keep reason short and concise (under 12 words).
+6. Keep reason short and concise (under 12 words).
 {creator_feedback}
 INPUT INDEXED TRANSCRIPT:
 {indexed_text}
@@ -284,18 +290,19 @@ def hunt_story_candidates_in_window(
         snapped_s, snapped_e, clip_text = snap_word_indices_to_sentences(window_words, s_idx, e_idx)
         dur = snapped_e - snapped_s
 
-        # Strict >= 30s minimum cap: expand outward to sentence boundaries if candidate is short
-        if dur < 30.0:
+        # Capture full narrative context: expand outward to sentence boundaries if candidate is under 60s
+        if dur < 60.0:
             exp_s = s_idx
             exp_e = e_idx
-            while exp_s > 0 and (float(window_words[exp_e].get("end", 0)) - float(window_words[exp_s].get("start", 0))) < 32.0:
+            target_context = 65.0
+            while exp_s > 0 and (float(window_words[exp_e].get("end", 0)) - float(window_words[exp_s].get("start", 0))) < target_context:
                 exp_s -= 1
-            while exp_e < n_words - 1 and (float(window_words[exp_e].get("end", 0)) - float(window_words[exp_s].get("start", 0))) < 32.0:
+            while exp_e < n_words - 1 and (float(window_words[exp_e].get("end", 0)) - float(window_words[exp_s].get("start", 0))) < target_context:
                 exp_e += 1
             snapped_s, snapped_e, clip_text = snap_word_indices_to_sentences(window_words, exp_s, exp_e)
             dur = snapped_e - snapped_s
 
-        if dur < 30.0 or dur > 180.0:
+        if dur < 30.0 or dur > 240.0:
             continue
 
         composite = calculate_virality_score(hook_sc, flow_sc, emot_sc, stan_sc)
@@ -355,11 +362,11 @@ def extract_action_candidates(
         comments=comments,
         video_path=slice_wav,
         z_thresh=sensitivity,
-        before=20,
-        after=40,
+        before=45,
+        after=60,
         window=5,
-        min_clip_length=30.0,
-        max_clip_length=120.0,
+        min_clip_length=45.0,
+        max_clip_length=240.0,
     )
 
     # 2. Visual motion energy
@@ -580,8 +587,8 @@ def hunt_story_candidates_and_pool(
     comments: Optional[List[Dict[str, Any]]] = None,
     endpoint: str = "http://localhost:11434",
     model_name: str = "qwen3:14b",
-    window_length_sec: float = 240.0,
-    window_overlap_sec: float = 30.0,
+    window_length_sec: float = 360.0,
+    window_overlap_sec: float = 60.0,
     remaining_quota: Optional[int] = None,
     remaining_buffer_quota: Optional[int] = None,
     buffer_score_threshold: float = 6.5,

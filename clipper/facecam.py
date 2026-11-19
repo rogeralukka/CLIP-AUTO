@@ -40,7 +40,7 @@ class FaceDetectorWrapper:
 
                 base_options = mp_python.BaseOptions(model_asset_path=BLAZE_FACE_PATH)
                 options = vision.FaceDetectorOptions(
-                    base_options=base_options, min_detection_confidence=0.5
+                    base_options=base_options, min_detection_confidence=0.28
                 )
                 self._mp_detector = vision.FaceDetector.create_from_options(options)
                 self._backend = "mediapipe"
@@ -111,11 +111,7 @@ _DETECTOR: Optional[FaceDetectorWrapper] = None
 
 
 def detect_faces_multiscale(detector: "FaceDetectorWrapper", frame_bgr: np.ndarray) -> List[Tuple[int, int, int, int]]:
-    """Detect faces on the full frame AND on 2x-upscaled overlapping tiles.
-
-    A streamer's facecam is small in a 1080p frame (face ~80-150px), below what the
-    short-range face model reliably finds. Zooming into tiles makes those faces big enough.
-    """
+    """Detect faces on full frame, 2x-upscaled overlapping tiles, and high-res corner webcam regions."""
     h, w = frame_bgr.shape[:2]
     found = list(detector.detect_faces(frame_bgr))
     tw, th = w // 2, h // 2
@@ -127,6 +123,23 @@ def detect_faces_multiscale(detector: "FaceDetectorWrapper", frame_bgr: np.ndarr
             big = cv2.resize(tile, (tw * 2, th * 2), interpolation=cv2.INTER_LINEAR)
             for (x, y, bw, bh) in detector.detect_faces(big):
                 found.append((tx + x // 2, ty + y // 2, max(1, bw // 2), max(1, bh // 2)))
+
+    # Dedicated high-resolution streamer corner passes (top-left, bottom-left, top-right, bottom-right)
+    corner_regions = [
+        (0, 0, int(w * 0.38), int(h * 0.45)),                     # Top-Left
+        (0, int(h * 0.55), int(w * 0.38), h - int(h * 0.55)),      # Bottom-Left
+        (int(w * 0.62), 0, w - int(w * 0.62), int(h * 0.45)),      # Top-Right
+        (int(w * 0.62), int(h * 0.55), w - int(w * 0.62), h - int(h * 0.55)), # Bottom-Right
+    ]
+    for cx0, cy0, cw, ch in corner_regions:
+        c_tile = frame_bgr[cy0:cy0 + ch, cx0:cx0 + cw]
+        if c_tile.size == 0:
+            continue
+        c_zoom = 2.5
+        c_big = cv2.resize(c_tile, (int(cw * c_zoom), int(ch * c_zoom)), interpolation=cv2.INTER_LINEAR)
+        for (x, y, bw, bh) in detector.detect_faces(c_big):
+            found.append((cx0 + int(x / c_zoom), cy0 + int(y / c_zoom), max(1, int(bw / c_zoom)), max(1, int(bh / c_zoom))))
+
     # Drop near-duplicates (same face found on several tiles)
     unique: List[Tuple[int, int, int, int]] = []
     for b in sorted(found, key=lambda r: -r[2] * r[3]):
@@ -288,7 +301,7 @@ def cluster_face_boxes(
     boxes_with_times: List[Tuple[float, Tuple[int, int, int, int]]],
     frame_width: int,
     frame_height: int,
-    drift_tolerance: float = 0.15,
+    drift_tolerance: float = 0.28,
 ) -> Optional[Dict[str, Any]]:
     """Find the dominant stable face bounding box cluster across sampled frames.
 
@@ -296,7 +309,7 @@ def cluster_face_boxes(
         boxes_with_times: List of (timestamp, (x, y, w, h))
         frame_width: Width of video
         frame_height: Height of video
-        drift_tolerance: Allowed relative drift in coordinates (default 15%)
+        drift_tolerance: Allowed relative drift in coordinates (default 28%)
 
     Returns:
         Dict with cluster metadata or None if no consistent cluster.
@@ -306,8 +319,8 @@ def cluster_face_boxes(
 
     # Group boxes that are close to each other
     clusters: List[List[Tuple[float, Tuple[int, int, int, int]]]] = []
-    max_dist_x = frame_width * drift_tolerance
-    max_dist_y = frame_height * drift_tolerance
+    base_dist_x = frame_width * drift_tolerance
+    base_dist_y = frame_height * drift_tolerance
 
     for t, box in boxes_with_times:
         bx, by, bw, bh = box
@@ -319,6 +332,13 @@ def cluster_face_boxes(
             # Average center of cluster
             avg_cx = np.mean([b[1][0] + b[1][2] / 2.0 for b in c])
             avg_cy = np.mean([b[1][1] + b[1][3] / 2.0 for b in c])
+
+            # In corner regions (where webcams reside), allow wider drift for natural head motion
+            in_corner = (cx < frame_width * 0.40 or cx > frame_width * 0.60) and (cy < frame_height * 0.45 or cy > frame_height * 0.55)
+            same_quadrant = (cx < frame_width * 0.5) == (avg_cx < frame_width * 0.5) and (cy < frame_height * 0.5) == (avg_cy < frame_height * 0.5)
+            max_dist_x = frame_width * 0.35 if (in_corner and same_quadrant) else base_dist_x
+            max_dist_y = frame_height * 0.35 if (in_corner and same_quadrant) else base_dist_y
+
             if abs(cx - avg_cx) <= max_dist_x and abs(cy - avg_cy) <= max_dist_y:
                 c.append((t, box))
                 matched = True
@@ -545,14 +565,14 @@ def detect_facecam(
     other_ratio = len(other_times) / max(1, total_samples)
     any_face_ratio = frames_with_face / max(1, total_samples)
 
-    big_face_ratio = float(fc_cfg.get("fullscreen_face_ratio", 0.22))
+    big_face_ratio = float(fc_cfg.get("fullscreen_face_ratio", 0.20))
     is_big = med_box[3] >= frame_h * big_face_ratio
-    stable = drift <= float(fc_cfg.get("facecam_max_drift", 0.03))
+    stable = drift <= float(fc_cfg.get("facecam_max_drift", 0.10))
 
     # Facecam overlays sit near an edge/corner of the screen, not in the middle of the scene
     mcx = (med_box[0] + med_box[2] / 2.0) / frame_w
     mcy = (med_box[1] + med_box[3] / 2.0) / frame_h
-    near_edge = mcx < 0.35 or mcx > 0.65 or mcy < 0.30 or mcy > 0.70
+    near_edge = mcx < 0.38 or mcx > 0.62 or mcy < 0.32 or mcy > 0.68
 
     # Real cam rectangles (one per streamer: co-op streams show two cams)
     frames = [f for _, f in samples]
@@ -600,13 +620,13 @@ def detect_facecam(
     else:
         people = 1
 
-    # Single source layout: if a streamer is clearly on camera (people == 1 and presence_ratio >= 0.35),
+    # Single source layout: if a streamer is clearly on camera (people == 1 and presence_ratio >= 0.25),
     # default to "irl" (portrait face-tracking crop) rather than letterboxed "gameplay".
     single_cfg = fc_cfg.get("single_source_layout")
     if single_cfg:
         single = str(single_cfg)
     else:
-        single = "irl" if (people == 1 and presence_ratio >= 0.35) else "gameplay"
+        single = "irl" if (people == 1 and (presence_ratio >= 0.25 or any_face_ratio >= 0.25)) else "gameplay"
 
     # Truly distinct co-op duo cams: both must have high face presence (>= 0.50) in this clip
     # and both must be real boxed cams (kind == "box"), with physical separation on screen
@@ -617,7 +637,7 @@ def detect_facecam(
         and abs(cams[0]["rect"][0] - cams[1]["rect"][0]) > frame_w * 0.30
     )
 
-    if presence_ratio >= thresh and is_big:
+    if (presence_ratio >= thresh or any_face_ratio >= thresh) and is_big:
         # Full-screen camera / Just Chatting / reaction stream
         stream_type = "just_chatting"
         layout = "irl" if people == 1 else "gameplay"
@@ -631,12 +651,12 @@ def detect_facecam(
         best_cam = max(cams, key=lambda c: (c.get("kind") == "box", c.get("presence", 0.0), -c["rect"][2]))
         cams = [best_cam]
         stream_type, layout, found = "gaming_facecam", "split", True
-    elif presence_ratio >= thresh and near_edge and not is_big:
+    elif (presence_ratio >= thresh or any_face_ratio >= 0.25) and near_edge and not is_big:
         # Corner facecam without a strict border (e.g. green-screened or borderless webcam)
         cam_box = padded_box
         cams = [{"rect": cam_box, "face_box": med_box, "presence": presence_ratio, "corner": corner, "kind": "corner_face"}]
         stream_type, layout, found = "gaming_facecam", "split", True
-    elif any_face_ratio >= 0.30:
+    elif any_face_ratio >= 0.22:
         # Streamer filmed by camera, moving or talking: IRL / camera stream
         stream_type = "irl"
         layout = "irl" if people == 1 else "gameplay"
@@ -651,7 +671,7 @@ def detect_facecam(
     else:
         corner = cluster["corner"]
 
-    track = build_subject_track(all_detections, frame_w, frame_h) if stream_type in ("irl", "just_chatting") else []
+    track = build_subject_track(all_detections, frame_w, frame_h) if (layout in ("irl", "face") or stream_type in ("irl", "just_chatting")) else []
 
     logger.info(
         f"Stream type: {stream_type} (layout={layout}; cams={[c['rect'] for c in cams]}, "

@@ -473,7 +473,7 @@ class LiveStreamClipper:
 
         # Start from self.last_analyzed_time (0.0 when stream starts).
         # We step forward through the stream in chunks up to self.analysis_window_seconds.
-        overlap = 15.0 if self.last_analyzed_time > 0.0 else 0.0
+        overlap = 60.0 if self.last_analyzed_time > 0.0 else 0.0
         start_offset = max(0.0, self.last_analyzed_time - overlap)
 
         available_dur = curr_duration - start_offset

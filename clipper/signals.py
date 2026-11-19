@@ -494,22 +494,19 @@ def snap_moment_boundaries(
     peak_time: float,
     stream_duration: float,
     full_transcript_data: Optional[Dict[str, Any]] = None,
-    min_length: float = 30.0,
-    max_length: float = 180.0,
-    max_lead: float = 5.0,
-    max_trail: float = 5.0,
-    before: float = 20.0,
-    after: float = 20.0,
+    min_length: float = 45.0,
+    max_length: float = 240.0,
+    max_lead: float = 15.0,
+    max_trail: float = 25.0,
+    before: float = 45.0,
+    after: float = 60.0,
     hype_curve: Optional[np.ndarray] = None,
     topics: Optional[List[Dict[str, float]]] = None,
 ) -> Tuple[float, float]:
-    """Choose clip boundaries around a hype peak so the clip starts and ends cleanly.
+    """Choose clip boundaries around a hype peak so the clip captures the full story context.
 
-    - Start: chat and loudness peak AFTER the thing that caused them, so the clip leads with
-      setup (~`before` seconds) and begins where a sentence begins or after a pause, never
-      mid-word.
-    - End: after the reaction dies down (hype curve back under 30% of the peak), at the end
-      of a sentence or at a pause, with a little room for the laugh/breath.
+    - Start: leads with ample setup (`before` ~45 seconds) and begins where a sentence begins.
+    - End: captures the complete reaction and aftermath discussion (settle >= 25s after peak).
     """
     words = (full_transcript_data or {}).get("words", []) or []
 
@@ -521,24 +518,26 @@ def snap_moment_boundaries(
         peak_val = float(np.max(hype_curve[lo:hi])) if hi > lo else 0.0
         if peak_val > 0:
             quiet = 0
+            # Allow at least 25 seconds of post-peak aftermath reaction before searching for quiet
+            min_aftermath = min(len(hype_curve), p + 25)
             limit = int(min(len(hype_curve), peak_time + after))
-            for sec in range(p + 4, limit):
-                quiet = quiet + 1 if hype_curve[sec] < 0.30 * peak_val else 0
-                if quiet >= 3:
+            for sec in range(min_aftermath, limit):
+                quiet = quiet + 1 if hype_curve[sec] < 0.25 * peak_val else 0
+                if quiet >= 6:
                     settle = float(sec)
                     break
-    settle = max(settle, min(stream_duration, peak_time + 5.0))
+    settle = max(settle, min(stream_duration, peak_time + 25.0))
 
     # 2. Start: closest natural start to (peak - before), within a window
     want_start = max(0.0, peak_time - before)
-    starts, _ = _sentence_marks(words, max(0.0, want_start - 8.0), max(0.0, peak_time - 4.0))
+    starts, _ = _sentence_marks(words, max(0.0, want_start - max_lead), max(0.0, peak_time - 4.0))
     if starts:
         start = min(starts, key=lambda c: abs(c[0] - want_start) - 0.8 * c[1])[0]
     else:
         start = want_start
 
     # 3. End: first natural end after the reaction settles
-    _, ends = _sentence_marks(words, max(peak_time + 3.0, settle - 3.0), min(stream_duration, peak_time + after + 8.0))
+    _, ends = _sentence_marks(words, max(peak_time + 5.0, settle - 5.0), min(stream_duration, peak_time + after + max_trail))
     if ends:
         after_settle = [c for c in ends if c[0] >= settle - 1.0]
         end = (after_settle[0] if after_settle else max(ends, key=lambda c: c[1]))[0]
@@ -548,13 +547,13 @@ def snap_moment_boundaries(
     # 3b. Context: if we know where topics/stories change, start where the current story
     # starts and stop where it is over, so a viewer gets the whole thing.
     if topics:
-        setup_min = 8.0
+        setup_min = 12.0
         starts_t = [tb for tb in topics
-                    if peak_time - (max_length - 8.0) <= tb["start"] <= peak_time - setup_min]
+                    if peak_time - (max_length - 12.0) <= tb["start"] <= peak_time - setup_min]
         if starts_t:
             tb = max(starts_t, key=lambda x: x["start"])  # start of the story the peak is in
             start = max(0.0, tb["start"] - 0.25)
-        ends_t = [tb for tb in topics if max(peak_time + 5.0, settle - 8.0) <= tb["prev_end"] <= start + max_length]
+        ends_t = [tb for tb in topics if max(peak_time + 8.0, settle - 8.0) <= tb["prev_end"] <= start + max_length]
         if ends_t:
             tb = min(ends_t, key=lambda x: x["prev_end"])  # the story wraps up here
             end = min(tb["prev_end"] + 0.6, tb["start"] - 0.05)

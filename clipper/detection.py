@@ -287,8 +287,8 @@ def find_moments(
     window: int = 5,
     z_thresh: float = 2.0,
     min_msgs: int = 10,
-    before: int = 20,
-    after: int = 30,
+    before: int = 45,
+    after: int = 60,
     merge_gap: int = 15,
     top: Optional[int] = None,
     safety_max: int = 50,
@@ -296,8 +296,8 @@ def find_moments(
     full_transcript_data: Optional[Dict[str, Any]] = None,
     heatmap_data: Optional[Any] = None,
     vod_id: Optional[str] = None,
-    min_clip_length: float = 30.0,
-    max_clip_length: float = 180.0,
+    min_clip_length: float = 45.0,
+    max_clip_length: float = 240.0,
     progress_cb: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Phase 2: Composite Hype Curve with robust z-scores, smart boundaries, and deduplication."""
