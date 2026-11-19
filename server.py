@@ -138,7 +138,15 @@ def _gpu_status() -> Dict[str, Any]:
 @app.get("/", response_class=HTMLResponse)
 def index():
     with open(os.path.join(ROOT, "web", "index.html"), "r", encoding="utf-8") as f:
-        return f.read()
+        html = f.read()
+    v = int(time.time())
+    html = html.replace('/static/app.js', f'/static/app.js?v={v}')
+    html = html.replace('/static/style.css', f'/static/style.css?v={v}')
+    return HTMLResponse(content=html, headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    })
 
 
 app.mount("/static", StaticFiles(directory=os.path.join(ROOT, "web")), name="static")
