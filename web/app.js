@@ -908,7 +908,19 @@ async function renderLive(full = true, liveData = null) {
   };
   const renderSessionsHtml = () => (st.sessions || []).map(renderSingleSessionHtml).join("");
 
-  const renderSingleClipHtml = (c) => `
+  const renderSingleClipHtml = (c) => {
+    const isTwitch = c.streamer_platform === "twitch" || (c.filename && c.filename.includes("twitch"));
+    const isYt = c.streamer_platform === "youtube" || (c.filename && (c.filename.includes("yt_") || c.filename.includes("youtube")));
+    const streamerLabel = c.streamer_name || (isTwitch ? "twitch" : isYt ? "youtube" : "stream");
+    const streamerBadge = isTwitch
+      ? `<span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(145,71,255,0.18);color:#bf94ff;border:1px solid rgba(145,71,255,0.3)">🟣 ${esc(streamerLabel)}</span>`
+      : isYt
+      ? `<span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,0,0,0.15);color:#ff6b6b;border:1px solid rgba(255,0,0,0.3)">🔴 YouTube</span>`
+      : `<span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.08);color:var(--tx)">● Live</span>`;
+
+    const timeDisplay = c.formatted_time || c.timestamp || "";
+
+    return `
     <div class="clip" data-fn="${esc(c.filename)}">
       ${c.media_deleted ? `
         <div class="phone" style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.4);border-radius:8px;aspect-ratio:9/16;text-align:center;padding:14px">
@@ -921,8 +933,14 @@ async function renderLive(full = true, liveData = null) {
         <div class="phone"><video src="${media(c.path)}#t=0.1" controls preload="metadata"></video></div>
       `}
       <div class="body">
+        <div class="row" style="gap:5px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+          ${streamerBadge}
+          <span class="muted small mono" style="font-size:11px">${esc(timeDisplay)}</span>
+          <span class="chip" style="font-size:10px;padding:1px 5px">${Math.round(c.duration || 0)}s</span>
+          <span class="chip" style="font-size:10px;padding:1px 5px;background:rgba(255,215,0,0.12);color:#ffd700">★ ${(c.hype_score || 0).toFixed(1)}</span>
+        </div>
         <b>${esc(c.hook_title || "")}</b>
-        <span class="muted small mono">${esc(c.timestamp || "")} · ${Math.round(c.duration || 0)}s · ${esc(c.layout || "")} · score ${(c.hype_score || 0).toFixed(1)}</span>
+        <span class="muted small mono">${esc(c.layout || "9:16 portrait")}</span>
         ${c.sub_scores ? `
           <div class="row" style="gap:4px;margin:3px 0 6px;flex-wrap:wrap">
             <span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.06);color:var(--tx)">🪝 Hook ${c.sub_scores.hook ?? "-"}</span>
@@ -967,6 +985,7 @@ async function renderLive(full = true, liveData = null) {
         </div>
       </div>
     </div>`;
+  };
 
   const renderClipsHtml = () => st.clips.length ? st.clips.map(renderSingleClipHtml).join("") : `<div class="empty" style="grid-column:1/-1"><b>No live clips yet</b>Start watching a live stream above. Clips will automatically appear here as hype moments are clipped!</div>`;
 
@@ -1068,12 +1087,16 @@ async function renderLive(full = true, liveData = null) {
       if (!newFnSet.has(fn)) el.remove();
     });
 
-    clips.slice().reverse().forEach(c => {
-      const existing = existingCardMap.get(c.filename);
-      if (!existing) {
-        clipsBox.insertAdjacentHTML("afterbegin", renderSingleClipHtml(c));
+    // Reconcile and enforce strict descending chronological order without recreating or reloading existing <video> elements
+    clips.forEach(c => {
+      let card = existingCardMap.get(c.filename);
+      if (!card) {
+        const temp = document.createElement("div");
+        temp.innerHTML = renderSingleClipHtml(c);
+        card = temp.firstElementChild;
+        existingCardMap.set(c.filename, card);
       } else {
-        const starRating = existing.querySelector(".star-rating");
+        const starRating = card.querySelector(".star-rating");
         if (starRating) {
           const uRating = c.user_rating || 0;
           starRating.querySelectorAll(".star-btn").forEach(s => {
@@ -1083,12 +1106,12 @@ async function renderLive(full = true, liveData = null) {
           const valEl = starRating.querySelector(".rating-val");
           if (valEl) valEl.textContent = uRating ? uRating + '/5' : 'Rate';
         }
-        existing.querySelectorAll(".fchip").forEach(fchip => {
+        card.querySelectorAll(".fchip").forEach(fchip => {
           fchip.classList.toggle("on", fchip.dataset.tag === (c.user_tag || ""));
         });
-        if (c.media_deleted && !existing.dataset.deleted) {
-          existing.dataset.deleted = "true";
-          const phone = existing.querySelector(".phone");
+        if (c.media_deleted && !card.dataset.deleted) {
+          card.dataset.deleted = "true";
+          const phone = card.querySelector(".phone");
           if (phone) {
             phone.outerHTML = `
               <div class="phone" style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.4);border-radius:8px;aspect-ratio:9/16;text-align:center;padding:14px">
@@ -1098,7 +1121,7 @@ async function renderLive(full = true, liveData = null) {
                 <span class="small" style="color:var(--ac);font-weight:600;margin-top:8px">✓ AI Taste Preserved</span>
               </div>`;
           }
-          const actRow = existing.querySelector(".body > .row:last-child");
+          const actRow = card.querySelector(".body > .row:last-child");
           if (actRow) {
             actRow.innerHTML = `
               <span class="muted small">Saved in data/ai_feedback.json</span>
@@ -1106,7 +1129,12 @@ async function renderLive(full = true, liveData = null) {
           }
         }
       }
+      // appendChild moves existing DOM node to exact sorted position without interrupting <video> playback
+      clipsBox.appendChild(card);
     });
+
+    const badge = $("#live-clip-count-badge");
+    if (badge) badge.textContent = `${clips.length} Clips`;
   };
 
   const setupDelegatedListeners = () => {
@@ -1165,6 +1193,8 @@ async function renderLive(full = true, liveData = null) {
           });
           const valEl = parent.querySelector(".rating-val");
           if (valEl) valEl.textContent = star + "/5";
+          const clipObj = (st.clips || []).find(c => c.filename === fn);
+          if (clipObj) clipObj.user_rating = star;
           try {
             await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: star } });
             toast(`Rated ${star}/5 ⭐ · AI judge trained with feedback!`);
@@ -1182,6 +1212,8 @@ async function renderLive(full = true, liveData = null) {
           }
           if (!isAlreadyOn) fchip.classList.add("on");
           const newTag = isAlreadyOn ? "" : tag;
+          const clipObj = (st.clips || []).find(c => c.filename === fn);
+          if (clipObj) clipObj.user_tag = newTag;
           try {
             await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: 0, tag: newTag } });
             if (newTag) toast(`Tagged "${fchip.textContent.trim()}" · AI feedback recorded!`);
@@ -1251,7 +1283,14 @@ async function renderLive(full = true, liveData = null) {
     </div>
   </div>
   <div id="live-sessions-box">${renderSessionsHtml()}</div>
-  <div class="clips" id="live-clips-box" data-count="${st.clips.length}" data-sig="${(st.clips || []).map(c => `${c.filename}:${c.hook_title || ''}:${c.duration || 0}`).join('|')}" style="margin-top:18px">${renderClipsHtml()}</div>`;
+  <div class="row" style="justify-content:space-between;align-items:center;margin:28px 0 12px">
+    <div class="row" style="gap:10px;align-items:center">
+      <h3 style="margin:0;font-size:18px;font-weight:700">Live Generated Clips</h3>
+      <span class="chip ok" id="live-clip-count-badge" style="font-size:12px;font-weight:600">${st.clips.length} Clips</span>
+      <span class="muted small">Chronological order (Newest first)</span>
+    </div>
+  </div>
+  <div class="clips" id="live-clips-box" data-count="${st.clips.length}" data-sig="${(st.clips || []).map(c => `${c.filename}:${c.hook_title || ''}:${c.duration || 0}`).join('|')}" style="margin-top:4px">${renderClipsHtml()}</div>`;
 
   $$("#lqual button").forEach(b => b.onclick = () => {
     $$("#lqual button").forEach(x => x.classList.remove("on"));

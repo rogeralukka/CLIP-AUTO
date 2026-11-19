@@ -542,8 +542,31 @@ def live_status():
                 try:
                     with open(meta, "r", encoding="utf-8") as f:
                         c_data = json.load(f)
-                        if "created_at" not in c_data:
-                            c_data["created_at"] = _get_clip_creation_time(meta, c_data)
+                        c_time = float(c_data.get("created_at") or _get_clip_creation_time(meta, c_data))
+                        c_data["created_at"] = c_time
+                        dt = datetime.datetime.fromtimestamp(c_time)
+                        c_data["formatted_time"] = dt.strftime("%b %d · %I:%M %p")
+
+                        # Parse streamer identity from metadata or filename
+                        fn = c_data.get("filename") or os.path.basename(meta)
+                        s_url = (c_data.get("stream_url") or "").lower()
+                        if "stableronaldo" in fn.lower() or "stableronaldo" in s_url:
+                            c_data["streamer_name"] = "stableronaldo"
+                            c_data["streamer_platform"] = "twitch"
+                        elif "jynxzi" in fn.lower() or "jynxzi" in s_url:
+                            c_data["streamer_name"] = "jynxzi"
+                            c_data["streamer_platform"] = "twitch"
+                        elif "twitch" in fn.lower() or "twitch.tv" in s_url:
+                            m_tw = re.search(r"twitch_([a-zA-Z0-9_\-]+)_", fn)
+                            c_data["streamer_name"] = m_tw.group(1) if m_tw else "twitch"
+                            c_data["streamer_platform"] = "twitch"
+                        elif "yt_" in fn.lower() or "youtube" in fn.lower() or "youtube.com" in s_url:
+                            c_data["streamer_name"] = "youtube"
+                            c_data["streamer_platform"] = "youtube"
+                        else:
+                            c_data["streamer_name"] = "stream"
+                            c_data["streamer_platform"] = "live"
+
                         loaded_clips.append(c_data)
                 except Exception:
                     pass
