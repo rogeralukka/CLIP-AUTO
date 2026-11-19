@@ -124,13 +124,34 @@ def is_internet_connected(timeout: float = 2.0) -> bool:
     return False
 
 
+def resolve_stream_quality(quality_input: Optional[str] = None) -> str:
+    """Resolve user quality preference into streamlink stream selectors.
+
+    data_saver:  720p/720p60 cuts Wi-Fi/data by ~75% while keeping crisp 1080p mobile video.
+    ultra_saver: 480p/360p cuts data by ~90% for mobile hotspot / metered networks.
+    source:      1080p60/1080p for unconstrained fiber connections.
+    """
+    if not quality_input:
+        cfg = load_config()
+        quality_input = cfg.get("live", {}).get("stream_quality", "720p,720p60,480p,best")
+    q_map = {
+        "data_saver": "720p,720p60,480p,best",
+        "ultra_saver": "480p,360p,worst",
+        "source": "1080p60,1080p,best",
+        "high_quality": "1080p60,1080p,best",
+        "balanced": "720p,720p60,480p,best",
+        "low_data": "480p,360p,worst",
+    }
+    return q_map.get(quality_input, quality_input)
+
+
 class LiveStreamClipper:
     """Live stream capture and real-time clipping engine."""
 
     def __init__(
         self,
         stream_url: str,
-        quality: str = "1080p60,1080p,720p60,720p,best",
+        quality: Optional[str] = None,
         check_interval_seconds: int = 30,
         buffer_duration_seconds: int = 900,  # 15 minutes rolling buffer
         output_base_dir: str = "clips/live",
@@ -140,7 +161,7 @@ class LiveStreamClipper:
         sensitivity: float = 2.2,
     ):
         self.stream_url = stream_url
-        self.quality = quality
+        self.quality = resolve_stream_quality(quality)
         self.check_interval_seconds = check_interval_seconds
         self.buffer_duration_seconds = buffer_duration_seconds
         self.preset_name = preset_name
@@ -157,6 +178,7 @@ class LiveStreamClipper:
         os.makedirs(self.buffer_dir, exist_ok=True)
         self.buffer_file = os.path.join(self.buffer_dir, "live_stream.ts")
         self.history_file = os.path.join(self.buffer_dir, "clipped_moments.json")
+        self.state_file = os.path.join(self.buffer_dir, "state.json")
 
         self._capture_proc: Optional[subprocess.Popen] = None
         self._running = False
@@ -187,6 +209,43 @@ class LiveStreamClipper:
         self._last_reconnect_attempt: float = 0.0
         self._capture_out_file: Optional[Any] = None
         self._capture_stderr_file: Optional[Any] = None
+
+        # Restore previous state if state_file exists on disk
+        if os.path.isfile(self.state_file):
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    saved_st = json.load(f)
+                self.last_analyzed_time = float(saved_st.get("last_analyzed_time", 0.0))
+                self.is_paused = bool(saved_st.get("is_paused", False))
+                self.clips_done = saved_st.get("clips_done", [])
+                self.recent_events = saved_st.get("recent_events", [])
+                self.status = saved_st.get("status", "paused" if self.is_paused else "idle")
+                self.activity = saved_st.get("activity", "Restored previous progress.")
+                logger.info(f"Restored session state for {self.stream_id}: analyzed to {self.last_analyzed_time:.1f}s, {len(self.clips_done)} clips.")
+            except Exception as e:
+                logger.warning(f"Could not load state file {self.state_file}: {e}")
+
+    def save_state(self) -> None:
+        """Persist current session progress to disk so restarts/reboots never lose progress."""
+        try:
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "stream_id": self.stream_id,
+                    "stream_url": self.stream_url,
+                    "quality": self.quality,
+                    "started_at": self._t0,
+                    "last_analyzed_time": round(self.last_analyzed_time, 2),
+                    "buffer_seconds": round(self.buffer_seconds, 2),
+                    "buffer_mb": round(self.buffer_mb, 2),
+                    "is_paused": self.is_paused,
+                    "status": self.status,
+                    "activity": self.activity,
+                    "clips_done": self.clips_done,
+                    "recent_events": self.recent_events[:30],
+                    "updated_at": datetime.datetime.now().isoformat(),
+                }, f, indent=2)
+        except Exception:
+            pass
 
     def _set_state(self, status: str, activity: str) -> None:
         with self._telemetry_lock:
@@ -227,6 +286,7 @@ class LiveStreamClipper:
                 "buffer_mb": self.buffer_mb,
                 "progress_pct": pct,
                 "sensitivity": self.sensitivity,
+                "quality": self.quality,
                 "is_paused": self.is_paused,
                 "offline_since": self._offline_since,
                 "recent_events": list(self.recent_events),
@@ -267,6 +327,7 @@ class LiveStreamClipper:
             except Exception:
                 pass
             self._capture_stderr_file = None
+        self.save_state()
 
     def resume(self):
         """Resume capture and analysis from live edge in append mode."""
@@ -749,8 +810,44 @@ class LiveStreamClipper:
         logger.info(f"Starting Live Stream Monitor for: {self.stream_url}")
         logger.info(f"Clips will be saved to: {self.output_dir}")
 
-        if not self.start_capture_process():
-            logger.error("Could not start live stream capture. Exiting.")
+        capture_ok = self.start_capture_process()
+        if not capture_ok:
+            if os.path.isfile(self.buffer_file):
+                curr_dur = get_media_duration_seconds(self.buffer_file)
+                self.buffer_seconds = curr_dur
+                try:
+                    self.buffer_mb = round(os.path.getsize(self.buffer_file) / (1024 * 1024), 1)
+                except OSError:
+                    pass
+                remaining = curr_dur - self.last_analyzed_time
+                if remaining > 25.0:
+                    logger.info(f"Stream is offline, but {remaining:.1f}s of unanalyzed recorded buffer remains. Processing buffer to completion...")
+                    self._set_state("draining", f"Stream ended. Finishing remaining {int(remaining)}s of recorded stream to completion...")
+                    self._record_event("info", f"🔄 Processing remaining {int(remaining)}s of recorded buffer to completion...")
+                    self.save_state()
+                    self._running = True
+                    while self._running and not self.is_paused:
+                        curr_dur = get_media_duration_seconds(self.buffer_file)
+                        self.buffer_seconds = curr_dur
+                        if self.last_analyzed_time >= curr_dur - 15.0:
+                            self._set_state("completed", f"Stream complete! All {int(curr_dur)}s fully analyzed ({len(self.clips_done)} clips generated).")
+                            self._record_event("info", f"✅ Entire stream processed to 100%. {len(self.clips_done)} clips created.")
+                            self.save_state()
+                            return
+                        try:
+                            self.check_and_clip()
+                        except Exception as e:
+                            logger.warning(f"Error during buffer drain: {e}")
+                        self.save_state()
+                        time.sleep(1)
+                    return
+                else:
+                    self._set_state("completed", f"Stream complete! All {int(curr_dur)}s analyzed ({len(self.clips_done)} clips generated).")
+                    self.save_state()
+                    return
+            logger.error("Could not start live stream capture and no recorded buffer exists. Exiting.")
+            self._set_state("stopped", "Stream is offline.")
+            self.save_state()
             return
 
         self._running = True
@@ -819,6 +916,7 @@ class LiveStreamClipper:
                 except Exception as e:
                     self._record_event("info", f"Check error: {e}")
                     logger.warning(f"Error during live clipping check: {e}")
+                self.save_state()
 
                 if iterations % 10 == 0:
                     try:
@@ -934,6 +1032,7 @@ class LiveStreamClipper:
             except Exception:
                 pass
             self._capture_stderr_file = None
+        self.save_state()
 
 
 def run_live_clipping(

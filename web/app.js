@@ -20,7 +20,7 @@ const STAGES = [["download", "Download"], ["transcribe", "Transcribe"], ["detect
 
 let savedDraft = {};
 try { savedDraft = JSON.parse(localStorage.getItem("clip_draft") || "{}"); } catch(e){}
-const S = { jobs: [], sys: null, campaigns: [], accounts: [], bounties: [], scheduleQueue: [], route: "new", arg: null, focus: 0, clipFilter: "all", draft: savedDraft, liveSens: localStorage.getItem("clip_live_sens") || "2.2" };
+const S = { jobs: [], sys: null, campaigns: [], accounts: [], bounties: [], scheduleQueue: [], route: "new", arg: null, focus: 0, clipFilter: "all", draft: savedDraft, liveSens: localStorage.getItem("clip_live_sens") || "2.2", liveQual: localStorage.getItem("clip_live_qual") || "data_saver" };
 
 /* ---------------- polling ---------------- */
 async function refresh() {
@@ -791,8 +791,10 @@ async function renderLive(full = true) {
   };
 
   const getStatusChip = (status, running) => {
-    if (!running) return '<span class="chip">stopped</span>';
+    if (status === 'completed') return '<span class="chip ok">✅ STREAM FINISHED (100%)</span>';
+    if (!running && status !== 'draining') return '<span class="chip">stopped</span>';
     switch (status) {
+      case 'draining': return '<span class="chip warn">🔄 FINISHING BUFFER</span>';
       case 'paused': return '<span class="chip warn">⏸ PAUSED</span>';
       case 'waiting_network': return '<span class="chip bad">⚠️ NO INTERNET</span>';
       case 'judging': return '<span class="chip hot">🧠 AI JUDGE (Qwen 14B)</span>';
@@ -808,6 +810,8 @@ async function renderLive(full = true) {
 
   const getBadgeName = (type) => {
     switch (type) {
+      case 'completed': return '✅ COMPLETE';
+      case 'draining': return '🔄 DRAINING';
       case 'paused': return '⏸️ PAUSED';
       case 'network_warn': return '⚠️ NETWORK';
       case 'spike': return '⚡ SPIKE';
@@ -827,31 +831,39 @@ async function renderLive(full = true) {
     const pct = t.progress_pct != null ? t.progress_pct : (s.running ? 100 : 0);
     const status = t.status || (s.running ? 'idle' : 'stopped');
     const isPaused = t.is_paused || status === 'paused';
-    const activity = t.activity || (s.running ? 'Listening to stream...' : 'Session stopped');
+    const isCompleted = status === 'completed';
+    const isDraining = status === 'draining';
+    const qualMode = t.quality || 'data_saver';
+    const activity = t.activity || (isCompleted ? 'All recorded stream buffer fully analyzed.' : s.running ? 'Listening to stream...' : 'Session stopped');
     const events = t.recent_events || [];
 
     return `
-    <div class="live-session-card ${s.running ? 'active' : ''}">
+    <div class="live-session-card ${s.running || isDraining ? 'active' : ''}">
       <div class="row" style="justify-content:space-between;align-items:center">
         <div class="row" style="gap:8px;align-items:center">
           ${getStatusChip(status, s.running)}
-          <b class="ttl" style="max-width:480px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.url)}</b>
+          <span class="chip" style="font-size:10px;background:rgba(255,255,255,0.06);color:var(--tx)" title="Capture Bandwidth Mode">📶 ${esc(qualMode.replace('_', ' '))}</span>
+          <b class="ttl" style="max-width:440px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.url)}</b>
           <span class="muted small">since ${esc(s.started)}</span>
         </div>
-        <div class="row" style="gap:8px">
-          ${isPaused
+        <div class="row" style="gap:8px;align-items:center">
+          ${isCompleted
+            ? `<span class="chip ok" style="padding:4px 8px;font-size:11px">100% Processed ✓</span>`
+            : isDraining
+            ? `<span class="chip warn" style="padding:4px 8px;font-size:11px">Finishing Buffer...</span>`
+            : isPaused
             ? `<button class="btn sm ok" data-resume="${s.id}">Resume ▶</button>`
             : `<button class="btn sm warn" data-pause="${s.id}">Pause ⏸</button>`
           }
           <button class="btn sm ghost" data-saverec="${s.id}" title="Save full recorded stream buffer (.ts)">Save Recording 💾</button>
-          <button class="btn sm danger" data-stop="${s.id}">Stop Monitor ⏹</button>
+          <button class="btn sm danger" data-stop="${s.id}">${isCompleted ? 'Clear ✕' : 'Stop Monitor ⏹'}</button>
         </div>
       </div>
 
       <!-- Live Buffer & Analysis Progress Bar -->
       <div class="col" style="gap:6px">
         <div class="live-prog-track" title="Buffer Analysis Progress: ${pct}%">
-          <div class="live-prog-bar ${s.running && status !== 'idle' && !isPaused ? 'busy' : ''}" style="width: ${Math.max(2, pct)}%"></div>
+          <div class="live-prog-bar ${s.running && status !== 'idle' && !isPaused && !isCompleted ? 'busy' : ''}" style="width: ${Math.max(2, pct)}%"></div>
         </div>
         <div class="row" style="justify-content:space-between;font-size:12px;color:var(--mu);margin-top:2px">
           <span><b style="color:var(--tx)">${pct}% analyzed</b> (${fmtDuration(anzSec)} of ${fmtDuration(bufSec)} buffer · ${bufMb} MB)</span>
@@ -883,7 +895,16 @@ async function renderLive(full = true) {
 
   const renderClipsHtml = () => st.clips.length ? st.clips.map(c => `
     <div class="clip">
-      <div class="phone"><video src="${media(c.path)}#t=0.1" controls preload="metadata"></video></div>
+      ${c.media_deleted ? `
+        <div class="phone" style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.4);border-radius:8px;aspect-ratio:9/16;text-align:center;padding:14px">
+          <div style="font-size:30px;margin-bottom:8px">💾</div>
+          <b style="font-size:12px;color:var(--ok)">Video File Removed</b>
+          <span class="muted small" style="margin-top:4px">${c.freed_mb ? c.freed_mb + ' MB freed' : 'Space freed'}</span>
+          <span class="small" style="color:var(--ac);font-weight:600;margin-top:8px">✓ AI Taste Preserved</span>
+        </div>
+      ` : `
+        <div class="phone"><video src="${media(c.path)}#t=0.1" controls preload="metadata"></video></div>
+      `}
       <div class="body">
         <b>${esc(c.hook_title || "")}</b>
         <span class="muted small mono">${esc(c.timestamp || "")} · ${Math.round(c.duration || 0)}s · ${esc(c.layout || "")} · score ${(c.hype_score || 0).toFixed(1)}</span>
@@ -921,8 +942,13 @@ async function renderLive(full = true) {
 
         <div class="capbox">${esc(capText(c.platforms || {}, "tiktok"))}</div>
         <div class="row" style="margin-top:8px;justify-content:space-between;align-items:center">
-          <a class="btn sm" href="${media(c.path)}" download>Download 💾</a>
-          <button class="btn sm danger" data-delclip="${esc(c.filename)}">Delete ✕</button>
+          ${c.media_deleted ? `
+            <span class="muted small">Saved in data/ai_feedback.json</span>
+            <button class="btn sm danger" data-delclip="${esc(c.filename)}" data-purge="true" title="Remove this card from view">Remove Card ✕</button>
+          ` : `
+            <a class="btn sm" href="${media(c.path)}" download>Download 💾</a>
+            <button class="btn sm danger" data-delclip="${esc(c.filename)}" data-purge="false" title="Delete video file to free disk storage while keeping AI taste training data">Free Storage 🗑️</button>
+          `}
         </div>
       </div>
     </div>`).join("") : `<div class="empty" style="grid-column:1/-1"><b>No live clips yet</b>Start watching a live stream above. Clips will automatically appear here as hype moments are clipped!</div>`;
@@ -955,8 +981,13 @@ async function renderLive(full = true) {
       renderLive(true);
     });
     $$("[data-delclip]").forEach(b => b.onclick = async () => {
-      if (!confirm("Delete this live clip?")) return;
-      await api("/api/live/clips/" + b.dataset.delclip, { method: "DELETE" });
+      const isPurge = b.dataset.purge === "true";
+      const promptMsg = isPurge
+        ? "Remove this card from view?"
+        : "Delete video media to free storage space? Your AI training rating and feedback will be permanently preserved.";
+      if (!confirm(promptMsg)) return;
+      await api("/api/live/clips/" + b.dataset.delclip + (isPurge ? "?purge=true" : ""), { method: "DELETE" });
+      toast(isPurge ? "Card removed" : "Video file deleted · AI taste feedback safely preserved in ai_feedback.json ✓");
       renderLive(true);
     });
     $$(".star-btn").forEach(btn => btn.onclick = async () => {
@@ -1020,6 +1051,19 @@ async function renderLive(full = true) {
       <button class="btn pri" id="lgo">● Start watching</button>
     </div>
     <div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">
+      <span class="lbl" style="margin:0">Bandwidth Mode:</span>
+      <div class="seg acc" id="lqual">
+        ${[
+          ["data_saver", "⚡ Data Saver (720p) · ~75% less data"],
+          ["ultra_saver", "🪶 Ultra Saver (480p) · ~90% less data"],
+          ["source", "🎬 Full Quality (1080p source)"]
+        ].map(([v, l]) =>
+          `<button data-v="${v}" class="${(S.liveQual || 'data_saver') === v ? "on" : ""}">${l}</button>`
+        ).join("")}
+      </div>
+      <span class="muted small">Data Saver cuts 36 GB down to ~8 GB while rendering 1080x1920 mobile clips.</span>
+    </div>
+    <div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">
       <span class="lbl" style="margin:0">Sensitivity:</span>
       <div class="seg acc" id="lsens">
         ${[["2.5", "Picky (Speed / Loud Streams)"], ["2.0", "Normal"], ["1.6", "Loose"]].map(([v, l]) =>
@@ -1031,6 +1075,13 @@ async function renderLive(full = true) {
   </div>
   <div id="live-sessions-box">${renderSessionsHtml()}</div>
   <div class="clips" id="live-clips-box" data-count="${st.clips.length}" data-sig="${(st.clips || []).map(c => `${c.filename}:${c.hook_title || ''}:${c.duration || 0}`).join('|')}" style="margin-top:18px">${renderClipsHtml()}</div>`;
+
+  $$("#lqual button").forEach(b => b.onclick = () => {
+    $$("#lqual button").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    S.liveQual = b.dataset.v;
+    localStorage.setItem("clip_live_qual", b.dataset.v);
+  });
 
   $$("#lsens button").forEach(b => b.onclick = async () => {
     $$("#lsens button").forEach(x => x.classList.remove("on"));
@@ -1050,9 +1101,10 @@ async function renderLive(full = true) {
     const url = $("#lurl").value.trim();
     if (!url) return toast("Paste a stream link", true);
     const sens = parseFloat($("#lsens .on")?.dataset?.v || S.liveSens || "2.2");
+    const qual = $("#lqual .on")?.dataset?.v || S.liveQual || "data_saver";
     try {
-      await api("/api/live", { method: "POST", body: { url, campaign_id: $("#lcamp").value || null, sensitivity: sens } });
-      toast("Watching " + url + ` (Sensitivity: ${sens})`);
+      await api("/api/live", { method: "POST", body: { url, campaign_id: $("#lcamp").value || null, sensitivity: sens, quality: qual } });
+      toast("Watching " + url + ` (${qual.replace('_', ' ')} · Sens: ${sens})`);
       renderLive(true);
     } catch (e) { toast(e.message, true); }
   };

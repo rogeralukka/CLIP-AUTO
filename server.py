@@ -75,6 +75,7 @@ def _save_active_sessions():
                 "sid": sid,
                 "url": s.get("url"),
                 "started": s.get("started"),
+                "quality": getattr(c, "quality", "data_saver"),
                 "preset": getattr(c, "preset_name", "classic_yellow"),
                 "campaign_id": getattr(c, "campaign", {}).get("id") if getattr(c, "campaign", None) else None,
                 "sensitivity": getattr(c, "sensitivity", 2.0),
@@ -86,25 +87,53 @@ def _save_active_sessions():
 
 
 def _restore_active_sessions():
-    if not os.path.isfile(ACTIVE_SESSIONS_FILE):
-        return
-    try:
-        with open(ACTIVE_SESSIONS_FILE, "r", encoding="utf-8") as f:
-            saved = json.load(f)
-        from clipper.live import LiveStreamClipper
-        for item in saved:
-            url = item.get("url")
-            if not url:
-                continue
-            camp = load_campaign(item.get("campaign_id")) if item.get("campaign_id") else None
-            lc = LiveStreamClipper(stream_url=url, preset_name=item.get("preset") or "classic_yellow",
-                                   campaign=camp, sensitivity=float(item.get("sensitivity") or 2.0))
-            t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
-            t.start()
-            sid = item.get("sid") or f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_]', '', lc.stream_id)[:10]}"
-            _live_sessions[sid] = {"url": url, "clipper": lc, "thread": t, "started": item.get("started", time.strftime("%H:%M"))}
-    except Exception:
-        pass
+    from clipper.live import LiveStreamClipper
+    restored_urls = set()
+
+    # 1. Restore from ACTIVE_SESSIONS_FILE
+    if os.path.isfile(ACTIVE_SESSIONS_FILE):
+        try:
+            with open(ACTIVE_SESSIONS_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            for item in saved:
+                url = item.get("url")
+                if not url or url in restored_urls:
+                    continue
+                camp = load_campaign(item.get("campaign_id")) if item.get("campaign_id") else None
+                lc = LiveStreamClipper(
+                    stream_url=url,
+                    quality=item.get("quality"),
+                    preset_name=item.get("preset") or "classic_yellow",
+                    campaign=camp,
+                    sensitivity=float(item.get("sensitivity") or 2.0),
+                )
+                t = None
+                if not lc.is_paused:
+                    t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
+                    t.start()
+                sid = item.get("sid") or f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_]', '', lc.stream_id)[:10]}"
+                _live_sessions[sid] = {"url": url, "clipper": lc, "thread": t, "started": item.get("started", time.strftime("%H:%M"))}
+                restored_urls.add(url)
+        except Exception:
+            pass
+
+    # 2. Discover any existing buffered streams with state.json
+    for state_path in glob.glob(os.path.join(ROOT, "downloads", "live_buffer", "*", "state.json")):
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                st_data = json.load(f)
+            url = st_data.get("stream_url")
+            if url and url not in restored_urls:
+                lc = LiveStreamClipper(stream_url=url, quality=st_data.get("quality"))
+                t = None
+                if not lc.is_paused:
+                    t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
+                    t.start()
+                sid = f"saved_{re.sub(r'[^a-zA-Z0-9_]', '', lc.stream_id)[:10]}"
+                _live_sessions[sid] = {"url": url, "clipper": lc, "thread": t, "started": time.strftime("%H:%M")}
+                restored_urls.add(url)
+        except Exception:
+            pass
 
 
 @app.on_event("startup")
@@ -436,17 +465,20 @@ class LiveIn(BaseModel):
     campaign_id: Optional[str] = None
     preset: Optional[str] = None
     sensitivity: Optional[float] = 2.2
+    quality: Optional[str] = "data_saver"
 
 
 @app.get("/api/live")
 def live_status():
     sessions = []
     for k, v in _live_sessions.items():
+        is_thread_alive = v["thread"].is_alive() if v.get("thread") else False
+        is_paused = getattr(v.get("clipper"), "is_paused", False)
         sess_info = {
             "id": k,
             "url": v["url"],
             "started": v["started"],
-            "running": v["thread"].is_alive(),
+            "running": is_thread_alive or not is_paused,
         }
         clipper_inst = v.get("clipper")
         if clipper_inst and hasattr(clipper_inst, "get_telemetry"):
@@ -490,8 +522,13 @@ def live_set_sensitivity(body: LiveSensIn):
 def live_start(body: LiveIn):
     from clipper.live import LiveStreamClipper
     camp = load_campaign(body.campaign_id) if body.campaign_id else None
-    lc = LiveStreamClipper(stream_url=body.url.strip(), preset_name=body.preset or "classic_yellow",
-                           campaign=camp, sensitivity=float(body.sensitivity or 2.2))
+    lc = LiveStreamClipper(
+        stream_url=body.url.strip(),
+        quality=body.quality or "data_saver",
+        preset_name=body.preset or "classic_yellow",
+        campaign=camp,
+        sensitivity=float(body.sensitivity or 2.2),
+    )
     t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
     t.start()
     clean_sid = re.sub(r"[^a-zA-Z0-9_]", "", lc.stream_id)[:10]
@@ -518,6 +555,7 @@ def live_pause(sid: str):
     c = s.get("clipper")
     if c and hasattr(c, "pause"):
         c.pause("Paused by user")
+    _save_active_sessions()
     return {"ok": True, "paused": True}
 
 
@@ -529,6 +567,11 @@ def live_resume(sid: str):
     c = s.get("clipper")
     if c and hasattr(c, "resume"):
         c.resume()
+    if s.get("thread") is None or not s["thread"].is_alive():
+        t = threading.Thread(target=c.run_loop, daemon=True, name=f"live-{c.stream_id}")
+        t.start()
+        s["thread"] = t
+    _save_active_sessions()
     return {"ok": True, "paused": False}
 
 
@@ -553,17 +596,90 @@ def live_save_recording(sid: str):
 
 
 @app.delete("/api/live/clips/{filename}")
-def live_delete_clip(filename: str):
+def live_delete_clip(filename: str, purge: bool = False):
+    """Delete clip media file to reclaim storage while permanently preserving AI rating & taste data."""
     base = os.path.splitext(filename)[0]
+    clean_fn = os.path.basename(filename)
     deleted = 0
-    for f in glob.glob(os.path.join("clips", "live", "*", f"{base}*")):
+    freed_bytes = 0
+    meta = None
+    meta_path = None
+
+    matched_files = glob.glob(os.path.join(ROOT, "clips", "live", "*", f"{base}*"))
+    for f in matched_files:
+        if f.endswith("_metadata.json") or f.endswith(".json"):
+            try:
+                with open(f, "r", encoding="utf-8") as fp:
+                    meta = json.load(fp)
+                meta_path = f
+            except Exception:
+                pass
+
+    # 1. Permanently preserve feedback and learning metadata in ai_feedback.json
+    feedback_file = os.path.join(ROOT, "data", "ai_feedback.json")
+    os.makedirs(os.path.dirname(feedback_file), exist_ok=True)
+    feedback_data = []
+    if os.path.isfile(feedback_file):
         try:
-            if os.path.isfile(f):
-                os.remove(f)
-                deleted += 1
+            with open(feedback_file, "r", encoding="utf-8") as fp:
+                feedback_data = json.load(fp)
+        except Exception:
+            feedback_data = []
+    prev_entry = next((e for e in feedback_data if os.path.basename(e.get("filename", "")) == clean_fn), {})
+
+    user_rating = (meta or {}).get("user_rating", 0) or prev_entry.get("rating", 0)
+    user_tag = (meta or {}).get("user_tag") or prev_entry.get("tag") or ("space_saving_deletion" if user_rating >= 3 else "deleted_by_user")
+    entry = {
+        "filename": clean_fn,
+        "rating": user_rating if user_rating > 0 else 1,
+        "tag": user_tag,
+        "notes": (meta or {}).get("user_notes") or prev_entry.get("notes", "Media removed to free disk storage"),
+        "hook_title": (meta or {}).get("hook_title") or prev_entry.get("hook_title", ""),
+        "transcript": (meta or {}).get("transcript") or prev_entry.get("transcript", ""),
+        "duration": (meta or {}).get("duration") or prev_entry.get("duration", 0),
+        "sub_scores": (meta or {}).get("sub_scores") or prev_entry.get("sub_scores"),
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "media_deleted": True,
+    }
+
+    feedback_data = [e for e in feedback_data if os.path.basename(e.get("filename", "")) != clean_fn]
+    feedback_data.insert(0, entry)
+    with open(feedback_file, "w", encoding="utf-8") as fp:
+        json.dump(feedback_data[:500], fp, indent=2)
+
+    # 2. Delete heavy video/audio media files
+    for f in matched_files:
+        ext = os.path.splitext(f)[1].lower()
+        if purge or ext in (".mp4", ".ts", ".mkv", ".mov", ".wav", ".aac"):
+            try:
+                if os.path.isfile(f):
+                    sz = os.path.getsize(f)
+                    os.remove(f)
+                    deleted += 1
+                    freed_bytes += sz
+            except Exception:
+                pass
+
+    freed_mb = round(freed_bytes / (1024 * 1024), 1)
+
+    # 3. If not purged, update lightweight metadata JSON to reflect media deletion
+    if not purge and meta and meta_path and os.path.isfile(meta_path):
+        try:
+            meta["media_deleted"] = True
+            meta["freed_mb"] = freed_mb
+            meta["path"] = ""
+            with open(meta_path, "w", encoding="utf-8") as fp:
+                json.dump(meta, fp, indent=2)
         except Exception:
             pass
-    return {"ok": True, "deleted": deleted}
+
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "freed_mb": freed_mb,
+        "feedback_preserved": True,
+        "filename": clean_fn,
+    }
 
 
 class ClipFeedbackIn(BaseModel):

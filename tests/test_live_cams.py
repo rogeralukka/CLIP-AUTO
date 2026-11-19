@@ -20,8 +20,12 @@ class TestLiveCams(unittest.TestCase):
     def tearDown(self):
         os.chdir(self.cwd)
 
-    def test_default_quality_prefers_1080(self):
-        self.assertTrue(self.lc.quality.startswith("1080p60"))
+    def test_default_quality_prefers_data_saver_and_source_prefers_1080(self):
+        # Default quality uses 720p data saver mode to save ~75% bandwidth on long streams
+        self.assertTrue(self.lc.quality.startswith("720p"))
+        # When source / 1080p is explicitly requested, it prefers 1080p60
+        source_lc = live.LiveStreamClipper("https://www.twitch.tv/somebody", quality="source")
+        self.assertTrue(source_lc.quality.startswith("1080p60"))
 
     def test_probe_learns_cams_before_first_clip(self):
         info = {"cams": [CAM], "found": True, "layout": "split"}

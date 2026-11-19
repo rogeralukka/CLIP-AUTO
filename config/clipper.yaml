@@ -79,3 +79,14 @@ polish:
 qc:
   loudness_tolerance_lu: 2.0
   music_silence_words_duration: 8.0
+
+live:
+  # Network & Bandwidth Conservation (Cuts 36 GB spend down to ~3-8 GB without losing mobile output quality)
+  # Modes:
+  #   data_saver:  "720p,720p60,480p,best" (~900 MB/hr, 75% Wi-Fi savings, looks crisp on 9:16 mobile)
+  #   ultra_saver: "480p,360p,worst"       (~350 MB/hr, 90% savings for mobile hotspot / metered Wi-Fi)
+  #   source:      "1080p60,1080p,best"    (~3.8 GB/hr, maximum uncompressed desktop source)
+  data_saver_mode: "data_saver"
+  stream_quality: "720p,720p60,480p,best"
+  offline_buffer_drain: true        # If stream ends while laptop is off, complete processing the saved buffer on reboot
+  preserve_feedback_on_delete: true # Keep AI training ratings & taste memory in ai_feedback.json when deleting heavy video files

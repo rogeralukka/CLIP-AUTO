@@ -79,6 +79,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "loudness_tolerance_lu": 2.0,
         "music_silence_words_duration": 8.0,
     },
+    "live": {
+        "stream_quality": "720p,720p60,480p,best",
+        "data_saver_mode": "data_saver",
+        "offline_buffer_drain": True,
+        "preserve_feedback_on_delete": True,
+    },
 }
 
 _LOADED_CONFIG: Dict[str, Any] = None
