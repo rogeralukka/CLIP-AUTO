@@ -502,68 +502,103 @@ def render_vertical_clip(
     ai_on = upscale_enabled()
     # Cam pictures are shown whole and enlarged at most this much (more looks soft/chopped)
     cam_max_scale = _cam_max_scale()
+    pol_cfg = load_config().get("polish", {})
+    full_bleed = bool(pol_cfg.get("cam_full_bleed", True))
 
     def cam_tile(src_label: str, bg_label: str, rect: Tuple[int, int, int, int], cell_w: int,
                  band_h: int, max_h: int, tag: str, out: str) -> Tuple[List[str], str, int, int]:
-        """Filters that make one cam tile: the WHOLE cam at a capped zoom, centred over a
-        wider context crop of the stream that fills the cell with real pixels.
+        """Filters that make one cam tile: full-bleed crop filled edge-to-edge with real pixels,
+        or capped-zoom whole cam over a seamless unblurred context crop.
         Returns (filters, "ai"|"src", tile_w, tile_h)."""
         x, y, w, h = rect
-        tw, th, _ = cam_tile_geometry(rect, cell_w, max_h, cam_max_scale)
-
-        # To avoid blurry side bars, crop a wider context box from the stream matching cell aspect ratio
         aspect_cell = float(cell_w) / float(max(1, band_h))
-        bg_w = min(src_w, max(w, int(round(h * aspect_cell))))
-        bg_h = min(src_h, max(h, int(round(bg_w / aspect_cell))))
-        bg_x = max(0, min(src_w - bg_w, x - (bg_w - w) // 2))
-        bg_y = max(0, min(src_h - bg_h, y - (bg_h - h) // 2))
 
-        parts = [
-            f"[{bg_label}] crop={bg_w}:{bg_h}:{bg_x}:{bg_y},scale={cell_w}:{band_h}:flags=bicubic,"
-            f"gblur=sigma=3,eq=brightness=-0.10,setsar=1 [{out}_bg]"
-        ]
-        fg = None
-        if ai_on and needs_upscale(w, h, tw, th):
-            up = upscale_crop_video(abs_rough, rect, tw, th,
-                                    os.path.splitext(abs_out)[0] + f"_{tag}_ai.mp4", job_id=job_id)
-            if up:
-                extra_inputs.extend(["-i", up])
-                fg = f"[{len(extra_inputs) // 2}:v] setsar=1 [{out}_fg]"
-        if fg is None:
-            parts.append(f"[{src_label}] crop={w}:{h}:{x}:{y},scale={tw}:{th}:{L},setsar=1 [{out}_fg]")
+        # Center of face / cam
+        fb = (facecam_info or {}).get("face_box")
+        if fb and (x <= fb[0] + fb[2] / 2.0 <= x + w):
+            fcx = fb[0] + fb[2] / 2.0
+            fcy = fb[1] + fb[3] / 2.0
         else:
-            parts.append(fg)
-        parts.append(f"[{out}_bg][{out}_fg] overlay=(W-w)/2:(H-h)/2 [{out}]")
-        return parts, ("ai" if fg else "src"), tw, th
+            fcx = x + w / 2.0
+            fcy = y + h / 2.0
 
-    TOP, MID = TOP_BAND, MID_BAND
+        if full_bleed:
+            # Full-bleed framing: crop matching aspect_cell centered on the face to fill the cell edge-to-edge
+            cw = min(src_w, max(w, int(round(h * aspect_cell))))
+            ch = min(src_h, max(h, int(round(cw / aspect_cell))))
+            cw -= cw % 2
+            ch -= ch % 2
+            cx = max(0, min(src_w - cw, int(round(fcx - cw / 2.0))))
+            cy = max(0, min(src_h - ch, int(round(fcy - ch * 0.45))))
+            cx -= cx % 2
+            cy -= cy % 2
+
+            fg = None
+            if ai_on and needs_upscale(cw, ch, cell_w, band_h):
+                up = upscale_crop_video(abs_rough, (cx, cy, cw, ch), cell_w, band_h,
+                                        os.path.splitext(abs_out)[0] + f"_{tag}_ai.mp4", job_id=job_id)
+                if up:
+                    extra_inputs.extend(["-i", up])
+                    fg = f"[{len(extra_inputs) // 2}:v] setsar=1 [{out}]"
+            parts = []
+            if fg is None:
+                parts.append(f"[{src_label}] crop={cw}:{ch}:{cx}:{cy},scale={cell_w}:{band_h}:{L},setsar=1 [{out}]")
+            else:
+                parts.append(fg)
+            return parts, ("ai" if fg else "src"), cell_w, band_h
+        else:
+            # Boxed mode with capped zoom: whole cam centered over unblurred context crop
+            tw, th, _ = cam_tile_geometry(rect, cell_w, max_h, cam_max_scale)
+            bg_w = min(src_w, max(w, int(round(h * aspect_cell))))
+            bg_h = min(src_h, max(h, int(round(bg_w / aspect_cell))))
+            bg_x = max(0, min(src_w - bg_w, x - (bg_w - w) // 2))
+            bg_y = max(0, min(src_h - bg_h, y - (bg_h - h) // 2))
+
+            parts = [
+                f"[{bg_label}] crop={bg_w}:{bg_h}:{bg_x}:{bg_y},scale={cell_w}:{band_h}:{L},setsar=1 [{out}_bg]"
+            ]
+            fg = None
+            if ai_on and needs_upscale(w, h, tw, th):
+                up = upscale_crop_video(abs_rough, rect, tw, th,
+                                        os.path.splitext(abs_out)[0] + f"_{tag}_ai.mp4", job_id=job_id)
+                if up:
+                    extra_inputs.extend(["-i", up])
+                    fg = f"[{len(extra_inputs) // 2}:v] setsar=1 [{out}_fg]"
+            if fg is None:
+                parts.append(f"[{src_label}] crop={w}:{h}:{x}:{y},scale={tw}:{th}:{L},setsar=1 [{out}_fg]")
+            else:
+                parts.append(fg)
+            parts.append(f"[{out}_bg][{out}_fg] overlay=(W-w)/2:(H-h)/2 [{out}]")
+            return parts, ("ai" if fg else "src"), tw, th
+
+    TOP = TOP_BAND
     if active_layout == "split":
-        # Facecam + gameplay: the whole cam (capped zoom) on top, the game below it, hook in the
+        # Facecam + gameplay: the whole cam (full-bleed or capped zoom) on top, the game below it, hook in the
         # top band and captions in the bottom band so neither covers the cam or the game.
         cam = cams[0] if cams else None
         rect = cam_region(facecam_info, cam, src_w, src_h)
         cam_h = plan_cam_band("split", facecam_info, cam_max_scale)
-        game_h = MID - cam_h
+        game_h = 1920 - TOP - cam_h
         gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, [rect], 1080.0 / game_h)
         tile, kind, tw, th = cam_tile("c0", "c1", rect, 1080, cam_h, 800, "cam", "camt")
-        uses = ["[s_bg]", "[s_game]"] + ([] if kind == "ai" else ["[c0]"]) + ["[c1]"]
+        uses = ["[s_bg]", "[s_game]"] + ([] if kind == "ai" else ["[c0]"]) + (["[c1]"] if not full_bleed else [])
         filter_parts.append(
             f"[0:v] split={len(uses)} {''.join(uses)}; "
             f"[s_bg] {BG} [bg]; " + "; ".join(tile) + "; "
             f"[s_game] crop={gw}:{gh}:{gx}:{gy},scale=1080:{game_h}:force_original_aspect_ratio=increase:{L},crop=1080:{game_h},setsar=1 [bot_game]; "
             f"[bg][camt] overlay=0:{TOP} [b1]; [b1][bot_game] overlay=0:{TOP + cam_h} [v_base]"
         )
-        logger.info(f"Split: cam {rect} shown whole at {tw}x{th} (x{tw / max(1, rect[2]):.2f}), game {1080}x{game_h}")
+        logger.info(f"Split: cam {rect} shown at {tw}x{th} (x{tw / max(1, rect[2]):.2f}), game {1080}x{game_h}")
     elif active_layout == "duo":
         # Two streamers (co-op): both whole cams side by side (540 wide each), game below.
         a, b = sorted(cams[:2], key=lambda c: c["rect"][0])
         ra, rb = tuple(a["rect"]), tuple(b["rect"])
         cam_h = plan_cam_band("duo", facecam_info, cam_max_scale)
-        game_h = MID - cam_h
+        game_h = 1920 - TOP - cam_h
         gx, gy, gw, gh = gameplay_crop_avoiding(src_w, src_h, [ra, rb], 1080.0 / game_h)
         ta, ka, taw, tah = cam_tile("a0", "a1", ra, 540, cam_h, 700, "cam_a", "cama")
         tb, kb, tbw, tbh = cam_tile("b0", "b1", rb, 540, cam_h, 700, "cam_b", "camb")
-        uses = ["[s_bg]", "[s_game]"] + ([] if ka == "ai" else ["[a0]"]) + ["[a1]"] + ([] if kb == "ai" else ["[b0]"]) + ["[b1]"]
+        uses = ["[s_bg]", "[s_game]"] + ([] if ka == "ai" else ["[a0]"]) + (["[a1]"] if not full_bleed else []) + ([] if kb == "ai" else ["[b0]"]) + (["[b1]"] if not full_bleed else [])
         filter_parts.append(
             f"[0:v] split={len(uses)} {''.join(uses)}; "
             f"[s_bg] {BG} [bg]; " + "; ".join(ta) + "; " + "; ".join(tb) + "; "
@@ -571,7 +606,7 @@ def render_vertical_clip(
             f"[bg][cama] overlay=0:{TOP} [m1]; [m1][camb] overlay=540:{TOP} [m2]; "
             f"[m2][bot_game] overlay=0:{TOP + cam_h} [v_base]"
         )
-        logger.info(f"Duo: cams shown whole at {taw}x{tah} and {tbw}x{tbh}, game 1080x{game_h}")
+        logger.info(f"Duo: cams shown at {taw}x{tah} and {tbw}x{tbh}, game 1080x{game_h}")
     elif active_layout in ("irl", "face") and (facecam_info or {}).get("track"):
         # Moving 9:16 window that follows the main person (IRL / camera streams)
         crop_h = src_h

@@ -584,20 +584,32 @@ def detect_facecam(
     # the middle over a blurred fill). Follow / Face stay available per clip.
     single = str(fc_cfg.get("single_source_layout", "gameplay"))
 
-    if len(cams) >= 2:
+    # Truly distinct co-op duo cams: both must have high face presence (>= 0.50) in this clip
+    # and both must be real boxed cams (kind == "box"), with physical separation on screen
+    is_true_duo = (
+        len(cams) >= 2
+        and all(c.get("presence", 0) >= 0.50 for c in cams[:2])
+        and all(c.get("kind") == "box" for c in cams[:2])
+        and abs(cams[0]["rect"][0] - cams[1]["rect"][0]) > frame_w * 0.30
+    )
+
+    if presence_ratio >= thresh and is_big and stable:
+        # One big face that stays put: Just Chatting / reaction cam filling the screen
+        stream_type, layout, found = "just_chatting", single, True
+    elif is_true_duo:
         # Two streamers' cams (duo / co-op stream): both cams on top, game below
         cams = sorted(cams[:2], key=lambda c: c["rect"][0])
         stream_type, layout, found = "gaming_duo", "duo", True
-    elif len(cams) == 1:
+    elif len(cams) >= 1:
+        # Solo gaming facecam: choose the single best cam
+        best_cam = max(cams, key=lambda c: (c.get("kind") == "box", c.get("presence", 0.0), -c["rect"][2]))
+        cams = [best_cam]
         stream_type, layout, found = "gaming_facecam", "split", True
     elif presence_ratio >= thresh and not is_big and near_edge and (
             (stable and other_ratio < 0.35) or drift <= 0.012 or cam_pick is not None):
         # Cam found by its face only (no clear outline). A very still face near the edge is
         # a cam even when the game shows faces of its own (story games).
         stream_type, layout, found = "gaming_facecam", "split", True
-    elif presence_ratio >= thresh and is_big and stable:
-        # One big face that stays put: Just Chatting / reaction cam filling the screen
-        stream_type, layout, found = "just_chatting", single, True
     elif any_face_ratio >= 0.30:
         # People filmed by a camera, moving around or several of them: IRL / event stream
         stream_type, layout, found = "irl", single, False
@@ -1048,7 +1060,7 @@ def gameplay_crop_avoiding(frame_w: int, frame_h: int, avoid: List[Tuple[int, in
                          max(0, min(y + ch, a[1] + a[3]) - max(y, a[1])) for a in avoid)
                 if ov > max_overlap * area:
                     continue
-                d = abs(x + cw / 2 - frame_w / 2) / frame_w + abs(y + ch / 2 - frame_h / 2) / frame_h
+                d = (abs(x + cw / 2 - frame_w / 2) / frame_w) * 2.0 + abs(y + ch / 2 - frame_h / 2) / frame_h
                 if best is None or d < best[0]:
                     best = (d, (x, y, cw, ch))
         if best is not None:
@@ -1108,11 +1120,11 @@ def cutout_region(face: Tuple[int, int, int, int], frame_w: int, frame_h: int) -
     Wide enough for shoulders and arms, from above the head down to the screen edge when the
     person sits at the bottom of the screen (they usually do)."""
     fx, fy, fw, fh = face
-    w = int(min(frame_w * 0.45, max(fw * 4.0, frame_w * 0.2)))
+    w = int(min(frame_w * 0.32, max(fw * 2.6, frame_w * 0.16)))
     x = int(round(fx + fw / 2.0 - w / 2.0))
     x = max(0, min(frame_w - w, x))
-    y0 = max(0, int(round(fy - fh * 0.9)))
-    y1 = frame_h if (fy + fh) > frame_h * 0.5 else min(frame_h, int(fy + fh * 3.6))
+    y0 = max(0, int(round(fy - fh * 0.75)))
+    y1 = frame_h if (fy + fh) > frame_h * 0.5 else min(frame_h, int(fy + fh * 2.8))
     h = max(2, y1 - y0)
     return (x - x % 2, y0 - y0 % 2, w - w % 2, h - h % 2)
 
@@ -1166,8 +1178,13 @@ def stream_cam_memory(cams: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The parts of each cam worth remembering for the rest of the stream."""
     keep = []
     for c in cams or []:
+        kind = c.get("kind") or "box"
+        presence = float(c.get("presence", 0.0))
+        # Transient cutouts or low-presence faces must not become permanent stream anchors
+        if kind == "cutout" and presence < 0.50:
+            continue
         keep.append({"rect": list(c["rect"]), "face_box": list(c.get("face_box") or c["rect"]),
-                     "kind": c.get("kind") or "box", "corner": c.get("corner", "unknown")})
+                     "kind": kind, "corner": c.get("corner", "unknown")})
     return keep
 
 
@@ -1184,6 +1201,12 @@ def merge_known_cams(known: List[Dict[str, Any]], cams: List[Dict[str, Any]]) ->
                 same = True
                 break
         if not same:
+            # If an existing known cam is a real box, do not adopt a transient cutout in another corner
+            if any(k.get("kind") == "box" for k in out) and new.get("kind") == "cutout":
+                continue
+            # A stream should have at most 2 known cams (for co-op), never 3 or 4 corners
+            if len(out) >= 2:
+                continue
             out.append(new)
     return out
 
