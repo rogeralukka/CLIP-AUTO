@@ -284,11 +284,18 @@ class LiveStreamClipper:
         streamlink_bin = get_streamlink_path()
 
         if streamlink_bin and os.path.isfile(streamlink_bin):
+            retry_flags = [
+                "--retry-streams", "2",
+                "--retry-max", "0",
+                "--retry-open", "5",
+                "--stream-timeout", "30",
+            ]
             if is_appending:
                 # Append mode: stream raw packets to stdout and append to buffer_file
                 cmd = [
                     streamlink_bin,
                     "--loglevel", "warning",
+                ] + retry_flags + [
                     "-O",
                     self.stream_url,
                     self.quality,
@@ -300,6 +307,7 @@ class LiveStreamClipper:
                     "--loglevel", "warning",
                     "--force",
                     "--hls-live-restart",
+                ] + retry_flags + [
                     "-o", self.buffer_file,
                     self.stream_url,
                     self.quality,
