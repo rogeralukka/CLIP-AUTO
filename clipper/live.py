@@ -111,6 +111,19 @@ def get_media_duration_seconds(media_path: str) -> float:
     return 0.0
 
 
+def is_internet_connected(timeout: float = 2.0) -> bool:
+    """Quick check for network reachability."""
+    import socket
+    for host, port in [("1.1.1.1", 53), ("8.8.8.8", 53), ("www.google.com", 80)]:
+        try:
+            sock = socket.create_connection((host, port), timeout=timeout)
+            sock.close()
+            return True
+        except (socket.timeout, OSError):
+            continue
+    return False
+
+
 class LiveStreamClipper:
     """Live stream capture and real-time clipping engine."""
 
@@ -168,6 +181,12 @@ class LiveStreamClipper:
         self.recent_events: List[Dict[str, Any]] = []
         self._telemetry_lock = threading.Lock()
 
+        # Pause and network reconnect tracking
+        self.is_paused: bool = False
+        self._offline_since: Optional[float] = None
+        self._last_reconnect_attempt: float = 0.0
+        self._capture_out_file: Optional[Any] = None
+
     def _set_state(self, status: str, activity: str) -> None:
         with self._telemetry_lock:
             self.status = status
@@ -207,59 +226,133 @@ class LiveStreamClipper:
                 "buffer_mb": self.buffer_mb,
                 "progress_pct": pct,
                 "sensitivity": self.sensitivity,
+                "is_paused": self.is_paused,
+                "offline_since": self._offline_since,
                 "recent_events": list(self.recent_events),
             }
 
     def update_sensitivity(self, new_val: float):
         old = self.sensitivity
         self.sensitivity = float(new_val)
-        self._add_event("info", f"Sensitivity changed: {old:.1f} -> {self.sensitivity:.1f}")
+        self._record_event("info", f"Sensitivity changed: {old:.1f} -> {self.sensitivity:.1f}")
 
-    def start_capture_process(self) -> bool:
-        """Start background stream capture from the start of the stream using streamlink or yt-dlp."""
+    def pause(self, reason: str = "Paused by user"):
+        """Pause capture and analysis without losing any buffer or progress."""
+        with self._telemetry_lock:
+            self.is_paused = True
+        self._set_state("paused", f"Session paused: {reason}")
+        self._record_event("paused", f"⏸️ {reason}")
+        if self._capture_proc and self._capture_proc.poll() is None:
+            logger.info(f"Pausing stream capture process for {self.stream_url}...")
+            try:
+                self._capture_proc.terminate()
+                self._capture_proc.wait(timeout=3)
+            except Exception:
+                try:
+                    self._capture_proc.kill()
+                except Exception:
+                    pass
+        if self._capture_out_file:
+            try:
+                self._capture_out_file.flush()
+                self._capture_out_file.close()
+            except Exception:
+                pass
+            self._capture_out_file = None
+
+    def resume(self):
+        """Resume capture and analysis from live edge in append mode."""
+        with self._telemetry_lock:
+            self.is_paused = False
+            self._offline_since = None
+        self._set_state("capturing", "Resuming live stream capture...")
+        self._record_event("info", "▶️ Resuming live stream monitor...")
+        return self.start_capture_process(append=True)
+
+    def start_capture_process(self, append: bool = False) -> bool:
+        """Start background stream capture using streamlink or yt-dlp.
+        If append=True (or if buffer_file already exists and has size > 1MB), appends stream packets
+        to the existing .ts buffer file without overwriting any previous progress.
+        """
+        if self.is_paused:
+            logger.info("Cannot start capture process while paused.")
+            return False
+
+        has_existing = os.path.isfile(self.buffer_file) and os.path.getsize(self.buffer_file) > 1024 * 1024
+        is_appending = append or has_existing
+
         streamlink_bin = get_streamlink_path()
 
         if streamlink_bin and os.path.isfile(streamlink_bin):
-            # Streamlink writes a continuous, single MPEG-TS stream directly to self.buffer_file.
-            # It handles YouTube, Twitch, and Kick streams, and ffmpeg can read the .ts buffer
-            # incrementally while it is actively being downloaded.
-            # --force prevents streamlink from prompting to overwrite if buffer file exists.
-            cmd = [
-                streamlink_bin,
-                "--loglevel", "warning",
-                "--force",
-                "--hls-live-restart",
-                "-o", self.buffer_file,
-                self.stream_url,
-                self.quality,
-            ]
-            logger.info(f"Starting live stream capture with streamlink (--hls-live-restart --force): {' '.join(cmd)}")
+            if is_appending:
+                # Append mode: stream raw packets to stdout and append to buffer_file
+                cmd = [
+                    streamlink_bin,
+                    "--loglevel", "warning",
+                    "-O",
+                    self.stream_url,
+                    self.quality,
+                ]
+                logger.info(f"Resuming live stream capture (append mode) with streamlink: {' '.join(cmd)}")
+            else:
+                cmd = [
+                    streamlink_bin,
+                    "--loglevel", "warning",
+                    "--force",
+                    "--hls-live-restart",
+                    "-o", self.buffer_file,
+                    self.stream_url,
+                    self.quality,
+                ]
+                logger.info(f"Starting initial live stream capture with streamlink: {' '.join(cmd)}")
         else:
-            # Fallback to yt-dlp: MUST use single pre-muxed stream format and --no-part so that
-            # self.buffer_file is written directly instead of splitting into unjoined .part files.
-            cmd = get_ytdlp_cmd(self.stream_url) + [
-                "--quiet",
-                "--no-part",
-                "--live-from-start",
-                "-f", "best[height<=1080]/best",
-                "-o", self.buffer_file,
-                self.stream_url,
-            ]
-            logger.info(f"Starting live stream capture with yt-dlp fallback (--live-from-start): {' '.join(cmd)}")
+            if is_appending:
+                cmd = get_ytdlp_cmd(self.stream_url) + [
+                    "--quiet",
+                    "-o", "-",
+                    self.stream_url,
+                ]
+                logger.info(f"Resuming live stream capture (append mode) with yt-dlp: {' '.join(cmd)}")
+            else:
+                cmd = get_ytdlp_cmd(self.stream_url) + [
+                    "--quiet",
+                    "--no-part",
+                    "--live-from-start",
+                    "-f", "best[height<=1080]/best",
+                    "-o", self.buffer_file,
+                    self.stream_url,
+                ]
+                logger.info(f"Starting initial live stream capture with yt-dlp: {' '.join(cmd)}")
 
         try:
-            self._capture_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            if is_appending:
+                if self._capture_out_file and not self._capture_out_file.closed:
+                    try:
+                        self._capture_out_file.close()
+                    except Exception:
+                        pass
+                self._capture_out_file = open(self.buffer_file, "ab")
+                self._capture_proc = subprocess.Popen(
+                    cmd,
+                    stdout=self._capture_out_file,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                self._capture_proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             self._t0 = time.time()
-            self._set_state("capturing", "Connected to live stream. Buffering stream audio from start...")
-            self._record_event("info", f"Started stream capture from start: {self.stream_url}")
-            m = re.search(r"twitch\.tv/([A-Za-z0-9_]+)/?$", self.stream_url.strip())
-            if m and m.group(1).lower() not in ("videos", "directory"):
-                self.chat = TwitchChatListener(m.group(1), self._t0)
-                self.chat.start()
+            self._offline_since = None
+            msg = "Resumed stream capture. Appending live data to buffer..." if is_appending else "Connected to live stream. Buffering stream audio from start..."
+            self._set_state("capturing", msg)
+            self._record_event("info", f"{'Resumed' if is_appending else 'Started'} stream capture: {self.stream_url}")
+            if self.chat is None:
+                m = re.search(r"twitch\.tv/([A-Za-z0-9_]+)/?$", self.stream_url.strip())
+                if m and m.group(1).lower() not in ("videos", "directory"):
+                    self.chat = TwitchChatListener(m.group(1), self._t0)
+                    self.chat.start()
             return True
         except Exception as e:
             self._set_state("error", f"Capture process failed to start: {e}")
@@ -581,7 +674,39 @@ class LiveStreamClipper:
 
         try:
             while self._running:
-                # If we have a backlog of buffer from earlier in the stream, sleep briefly
+                # 1. If paused by user or auto-paused, wait and do not capture or process
+                if self.is_paused:
+                    time.sleep(2)
+                    continue
+
+                # 2. Check health of capture process & network connectivity
+                proc_dead = (self._capture_proc is None or self._capture_proc.poll() is not None)
+                if proc_dead:
+                    net_ok = is_internet_connected()
+                    now = time.time()
+                    if not net_ok:
+                        if self._offline_since is None:
+                            self._offline_since = now
+                            self._set_state("waiting_network", "⚠️ Internet disconnected. Waiting to reconnect...")
+                            self._record_event("network_warn", "⚠️ Internet connection dropped. Waiting for network...")
+                        offline_duration = now - self._offline_since
+                        # Auto-pause after 5 minutes of no internet
+                        if offline_duration >= 300:
+                            self.pause(reason="Auto-paused: Internet disconnected for >5 minutes. Progress preserved.")
+                            continue
+                        time.sleep(3)
+                    else:
+                        # Internet is back/available!
+                        if self._offline_since is not None:
+                            self._record_event("info", "✅ Internet reconnected.")
+                            self._offline_since = None
+                        if now - self._last_reconnect_attempt >= 10:
+                            self._last_reconnect_attempt = now
+                            logger.info(f"Capture process inactive for {self.stream_url}. Attempting auto-reconnect (append mode)...")
+                            self._record_event("info", "🔄 Stream capture disconnected. Reconnecting to live stream...")
+                            self.start_capture_process(append=True)
+
+                # 3. If we have a backlog of buffer from earlier in the stream, sleep briefly
                 # so we catch up quickly to the live edge.
                 if os.path.isfile(self.buffer_file):
                     curr_duration = get_media_duration_seconds(self.buffer_file)
@@ -628,9 +753,16 @@ class LiveStreamClipper:
             logger.info("Stopping stream capture process...")
             self._capture_proc.terminate()
             try:
-                self._capture_proc.wait(timeout=5)
+                self._capture_proc.wait(timeout=3)
             except Exception:
                 self._capture_proc.kill()
+        if self._capture_out_file:
+            try:
+                self._capture_out_file.flush()
+                self._capture_out_file.close()
+            except Exception:
+                pass
+            self._capture_out_file = None
 
 
 def run_live_clipping(

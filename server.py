@@ -62,11 +62,57 @@ def _start_ollama_in_background():
     _ollama_thread.start()
 
 
+ACTIVE_SESSIONS_FILE = os.path.join(ROOT, "downloads", "live_buffer", "active_sessions.json")
+
+
+def _save_active_sessions():
+    try:
+        os.makedirs(os.path.dirname(ACTIVE_SESSIONS_FILE), exist_ok=True)
+        active_list = []
+        for sid, s in _live_sessions.items():
+            c = s.get("clipper")
+            active_list.append({
+                "sid": sid,
+                "url": s.get("url"),
+                "started": s.get("started"),
+                "preset": getattr(c, "preset_name", "classic_yellow"),
+                "campaign_id": getattr(c, "campaign", {}).get("id") if getattr(c, "campaign", None) else None,
+                "sensitivity": getattr(c, "sensitivity", 2.0),
+            })
+        with open(ACTIVE_SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(active_list, f, indent=2)
+    except Exception:
+        pass
+
+
+def _restore_active_sessions():
+    if not os.path.isfile(ACTIVE_SESSIONS_FILE):
+        return
+    try:
+        with open(ACTIVE_SESSIONS_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        from clipper.live import LiveStreamClipper
+        for item in saved:
+            url = item.get("url")
+            if not url:
+                continue
+            camp = load_campaign(item.get("campaign_id")) if item.get("campaign_id") else None
+            lc = LiveStreamClipper(stream_url=url, preset_name=item.get("preset") or "classic_yellow",
+                                   campaign=camp, sensitivity=float(item.get("sensitivity") or 2.0))
+            t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
+            t.start()
+            sid = item.get("sid") or f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_]', '', lc.stream_id)[:10]}"
+            _live_sessions[sid] = {"url": url, "clipper": lc, "thread": t, "started": item.get("started", time.strftime("%H:%M"))}
+    except Exception:
+        pass
+
+
 @app.on_event("startup")
 def _on_startup():
     ensure_worker_running()
     start_due_loop()          # publishes Instagram posts when their time comes (while Studio runs)
     _start_ollama_in_background()
+    _restore_active_sessions()
 
 
 # ----------------------------------------------------------------- helpers
@@ -443,6 +489,7 @@ def live_start(body: LiveIn):
     clean_sid = re.sub(r"[^a-zA-Z0-9_]", "", lc.stream_id)[:10]
     sid = f"{int(time.time())}_{clean_sid}"
     _live_sessions[sid] = {"url": body.url, "clipper": lc, "thread": t, "started": time.strftime("%H:%M")}
+    _save_active_sessions()
     return {"id": sid}
 
 
@@ -451,7 +498,50 @@ def live_stop(sid: str):
     s = _live_sessions.pop(sid, None)
     if s:
         s["clipper"].stop()
+    _save_active_sessions()
     return {"ok": True}
+
+
+@app.post("/api/live/{sid}/pause")
+def live_pause(sid: str):
+    s = _live_sessions.get(sid)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    c = s.get("clipper")
+    if c and hasattr(c, "pause"):
+        c.pause("Paused by user")
+    return {"ok": True, "paused": True}
+
+
+@app.post("/api/live/{sid}/resume")
+def live_resume(sid: str):
+    s = _live_sessions.get(sid)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    c = s.get("clipper")
+    if c and hasattr(c, "resume"):
+        c.resume()
+    return {"ok": True, "paused": False}
+
+
+@app.post("/api/live/{sid}/save")
+def live_save_recording(sid: str):
+    s = _live_sessions.get(sid)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    c = s.get("clipper")
+    if not c or not os.path.isfile(c.buffer_file):
+        raise HTTPException(404, "Buffer recording file not found")
+    rec_dir = os.path.join(ROOT, "clips", "recordings")
+    os.makedirs(rec_dir, exist_ok=True)
+    ts_now = time.strftime("%Y%m%d_%H%M%S")
+    clean_id = re.sub(r"[^a-zA-Z0-9_]", "", c.stream_id)[:15]
+    dest_name = f"recording_{clean_id}_{ts_now}.ts"
+    dest_path = os.path.join(rec_dir, dest_name)
+    shutil.copyfile(c.buffer_file, dest_path)
+    rel_path = os.path.join("clips", "recordings", dest_name).replace("\\", "/")
+    size_mb = round(os.path.getsize(dest_path) / (1024 * 1024), 1)
+    return {"ok": True, "path": rel_path, "filename": dest_name, "size_mb": size_mb}
 
 
 @app.delete("/api/live/clips/{filename}")

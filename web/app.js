@@ -728,6 +728,8 @@ async function renderLive(full = true) {
   const getStatusChip = (status, running) => {
     if (!running) return '<span class="chip">stopped</span>';
     switch (status) {
+      case 'paused': return '<span class="chip warn">⏸ PAUSED</span>';
+      case 'waiting_network': return '<span class="chip bad">⚠️ NO INTERNET</span>';
       case 'judging': return '<span class="chip hot">🧠 AI JUDGE (Qwen 14B)</span>';
       case 'transcribing': return '<span class="chip warn">🎙️ TRANSCRIBING</span>';
       case 'rendering': return '<span class="chip ac">🎬 RENDERING 9:16</span>';
@@ -741,6 +743,8 @@ async function renderLive(full = true) {
 
   const getBadgeName = (type) => {
     switch (type) {
+      case 'paused': return '⏸️ PAUSED';
+      case 'network_warn': return '⚠️ NETWORK';
       case 'spike': return '⚡ SPIKE';
       case 'transcribing': return '🎙️ WHISPER';
       case 'judge_reject': return '❌ REJECTED';
@@ -757,6 +761,7 @@ async function renderLive(full = true) {
     const bufMb = t.buffer_mb || 0;
     const pct = t.progress_pct != null ? t.progress_pct : (s.running ? 100 : 0);
     const status = t.status || (s.running ? 'idle' : 'stopped');
+    const isPaused = t.is_paused || status === 'paused';
     const activity = t.activity || (s.running ? 'Listening to stream...' : 'Session stopped');
     const events = t.recent_events || [];
 
@@ -769,6 +774,11 @@ async function renderLive(full = true) {
           <span class="muted small">since ${esc(s.started)}</span>
         </div>
         <div class="row" style="gap:8px">
+          ${isPaused
+            ? `<button class="btn sm ok" data-resume="${s.id}">Resume ▶</button>`
+            : `<button class="btn sm warn" data-pause="${s.id}">Pause ⏸</button>`
+          }
+          <button class="btn sm ghost" data-saverec="${s.id}" title="Save full recorded stream buffer (.ts)">Save Recording 💾</button>
           <button class="btn sm danger" data-stop="${s.id}">Stop Monitor ⏹</button>
         </div>
       </div>
@@ -776,7 +786,7 @@ async function renderLive(full = true) {
       <!-- Live Buffer & Analysis Progress Bar -->
       <div class="col" style="gap:6px">
         <div class="live-prog-track" title="Buffer Analysis Progress: ${pct}%">
-          <div class="live-prog-bar ${s.running && status !== 'idle' ? 'busy' : ''}" style="width: ${Math.max(2, pct)}%"></div>
+          <div class="live-prog-bar ${s.running && status !== 'idle' && !isPaused ? 'busy' : ''}" style="width: ${Math.max(2, pct)}%"></div>
         </div>
         <div class="row" style="justify-content:space-between;font-size:12px;color:var(--mu);margin-top:2px">
           <span><b style="color:var(--tx)">${pct}% analyzed</b> (${fmtDuration(anzSec)} of ${fmtDuration(bufSec)} buffer · ${bufMb} MB)</span>
@@ -821,7 +831,32 @@ async function renderLive(full = true) {
     </div>`).join("") : `<div class="empty" style="grid-column:1/-1"><b>No live clips yet</b>Start watching a live stream above. Clips will automatically appear here as hype moments are clipped!</div>`;
 
   const bindActions = () => {
-    $$("[data-stop]").forEach(b => b.onclick = async () => { await api("/api/live/" + b.dataset.stop, { method: "DELETE" }); renderLive(true); });
+    $$("[data-pause]").forEach(b => b.onclick = async () => {
+      try {
+        await api(`/api/live/${b.dataset.pause}/pause`, { method: "POST" });
+        toast("Session paused (progress safely saved)");
+        renderLive(false);
+      } catch (e) { toast(e.message, true); }
+    });
+    $$("[data-resume]").forEach(b => b.onclick = async () => {
+      try {
+        await api(`/api/live/${b.dataset.resume}/resume`, { method: "POST" });
+        toast("Session resumed · Continuing live capture");
+        renderLive(false);
+      } catch (e) { toast(e.message, true); }
+    });
+    $$("[data-saverec]").forEach(b => b.onclick = async () => {
+      try {
+        toast("Saving full stream recording to clips/recordings/...");
+        const res = await api(`/api/live/${b.dataset.saverec}/save`, { method: "POST" });
+        toast(`Full recording saved: ${res.filename} (${res.size_mb} MB) ✓`);
+      } catch (e) { toast(e.message, true); }
+    });
+    $$("[data-stop]").forEach(b => b.onclick = async () => {
+      if (!confirm("Stop monitoring this live stream? Buffer and clips are kept safely.")) return;
+      await api("/api/live/" + b.dataset.stop, { method: "DELETE" });
+      renderLive(true);
+    });
     $$("[data-delclip]").forEach(b => b.onclick = async () => {
       if (!confirm("Delete this live clip?")) return;
       await api("/api/live/clips/" + b.dataset.delclip, { method: "DELETE" });
