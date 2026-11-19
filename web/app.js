@@ -23,14 +23,19 @@ try { savedDraft = JSON.parse(localStorage.getItem("clip_draft") || "{}"); } cat
 const S = { jobs: [], sys: null, campaigns: [], accounts: [], bounties: [], scheduleQueue: [], route: "new", arg: null, focus: 0, clipFilter: "all", draft: savedDraft, liveSens: localStorage.getItem("clip_live_sens") || "2.2", liveQual: localStorage.getItem("clip_live_qual") || "data_saver" };
 
 /* ---------------- polling ---------------- */
+let _lastSocialRefresh = 0;
 async function refresh() {
   try {
-    const [jobs, qPosts, accs, live] = await Promise.all([
+    const now = Date.now();
+    const needSocial = S.route === "schedule" || (now - _lastSocialRefresh > 15000);
+    const promises = [
       api("/api/jobs").catch(() => []),
-      api("/api/social/queue").catch(() => []),
-      api("/api/social/accounts").catch(() => []),
+      needSocial ? api("/api/social/queue").catch(() => S.scheduleQueue || []) : Promise.resolve(S.scheduleQueue || []),
+      needSocial ? api("/api/social/accounts").catch(() => S.accounts || []) : Promise.resolve(S.accounts || []),
       api("/api/live").catch(() => null)
-    ]);
+    ];
+    if (needSocial) _lastSocialRefresh = now;
+    const [jobs, qPosts, accs, live] = await Promise.all(promises);
     S.jobs = jobs || [];
     S.scheduleQueue = qPosts || [];
     S.accounts = accs || [];
@@ -48,7 +53,7 @@ async function refresh() {
     }
     if (S.route === "queue") renderQueue();
     if (S.route === "clips") updateClipsLive();
-    if (S.route === "live") renderLive(false);
+    if (S.route === "live") renderLive(false, live);
     if (S.route === "schedule" && !document.activeElement.matches("input,textarea,select")) renderSchedule(false);
     if (S.route === "bounties" && !document.activeElement.matches("input,textarea,select") && !BOUNTIES.adding) renderBounties(false);
   } catch (e) { /* server restarting */ }
@@ -777,8 +782,17 @@ function bindPublish(acc, editing) {
 }
 
 /* ---------------- LIVE ---------------- */
-async function renderLive(full = true) {
-  const [st, camps] = await Promise.all([api("/api/live"), api("/api/campaigns").catch(() => [])]);
+async function renderLive(full = true, liveData = null) {
+  let st = liveData;
+  if (!st) {
+    st = await api("/api/live").catch(() => null);
+  }
+  if (!st) return;
+
+  if (full || !S.campaigns || !S.campaigns.length) {
+    S.campaigns = await api("/api/campaigns").catch(() => S.campaigns || []);
+  }
+  const camps = S.campaigns || [];
   const activeCount = (st.sessions || []).filter(s => s.running).length;
   const bLive = $("#b-live");
   if (bLive) bLive.textContent = activeCount ? `${activeCount} LIVE` : "";
@@ -823,7 +837,7 @@ async function renderLive(full = true) {
     }
   };
 
-  const renderSessionsHtml = () => (st.sessions || []).map(s => {
+  const renderSingleSessionHtml = (s) => {
     const t = s.telemetry || {};
     const bufSec = t.buffer_seconds || 0;
     const anzSec = t.analyzed_seconds || 0;
@@ -838,15 +852,15 @@ async function renderLive(full = true) {
     const events = t.recent_events || [];
 
     return `
-    <div class="live-session-card ${s.running || isDraining ? 'active' : ''}">
+    <div class="live-session-card ${s.running || isDraining ? 'active' : ''}" data-sid="${esc(s.id)}">
       <div class="row" style="justify-content:space-between;align-items:center">
         <div class="row" style="gap:8px;align-items:center">
-          ${getStatusChip(status, s.running)}
+          <span class="live-status-wrap">${getStatusChip(status, s.running)}</span>
           <span class="chip" style="font-size:10px;background:rgba(255,255,255,0.06);color:var(--tx)" title="Capture Bandwidth Mode">📶 ${esc(qualMode.replace('_', ' '))}</span>
           <b class="ttl" style="max-width:440px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.url)}</b>
           <span class="muted small">since ${esc(s.started)}</span>
         </div>
-        <div class="row" style="gap:8px;align-items:center">
+        <div class="row live-act-btns" style="gap:8px;align-items:center">
           ${isCompleted
             ? `<span class="chip ok" style="padding:4px 8px;font-size:11px">100% Processed ✓</span>`
             : isDraining
@@ -866,18 +880,18 @@ async function renderLive(full = true) {
           <div class="live-prog-bar ${s.running && status !== 'idle' && !isPaused && !isCompleted ? 'busy' : ''}" style="width: ${Math.max(2, pct)}%"></div>
         </div>
         <div class="row" style="justify-content:space-between;font-size:12px;color:var(--mu);margin-top:2px">
-          <span><b style="color:var(--tx)">${pct}% analyzed</b> (${fmtDuration(anzSec)} of ${fmtDuration(bufSec)} buffer · ${bufMb} MB)</span>
-          <span style="color:var(--ac);font-weight:600">${esc(activity)}</span>
+          <span class="live-prog-text"><b style="color:var(--tx)">${pct}% analyzed</b> (${fmtDuration(anzSec)} of ${fmtDuration(bufSec)} buffer · ${bufMb} MB)</span>
+          <span class="live-act-text" style="color:var(--ac);font-weight:600">${esc(activity)}</span>
         </div>
       </div>
 
       <!-- Live Activity & AI Judge Decision Feed -->
       <div class="col" style="gap:4px">
         <div class="row" style="justify-content:space-between;align-items:center">
-          <span class="lbl" style="margin:0">Live Engine & AI Judge Activity (${events.length} events)</span>
+          <span class="lbl live-ev-count" style="margin:0">Live Engine & AI Judge Activity (${events.length} events)</span>
           <span class="muted small">${events.length ? 'Real-time decision trace' : 'Waiting for first event...'}</span>
         </div>
-        <div class="live-events-feed">
+        <div class="live-events-feed" data-evsig="${(events || []).map(e => e.time + e.type).join('|')}">
           ${events.length ? events.map(ev => `
             <div class="live-event-row">
               <span class="live-ev-time">${esc(ev.time)}</span>
@@ -891,10 +905,11 @@ async function renderLive(full = true) {
         </div>
       </div>
     </div>`;
-  }).join("");
+  };
+  const renderSessionsHtml = () => (st.sessions || []).map(renderSingleSessionHtml).join("");
 
-  const renderClipsHtml = () => st.clips.length ? st.clips.map(c => `
-    <div class="clip">
+  const renderSingleClipHtml = (c) => `
+    <div class="clip" data-fn="${esc(c.filename)}">
       ${c.media_deleted ? `
         <div class="phone" style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.4);border-radius:8px;aspect-ratio:9/16;text-align:center;padding:14px">
           <div style="font-size:30px;margin-bottom:8px">💾</div>
@@ -951,88 +966,250 @@ async function renderLive(full = true) {
           `}
         </div>
       </div>
-    </div>`).join("") : `<div class="empty" style="grid-column:1/-1"><b>No live clips yet</b>Start watching a live stream above. Clips will automatically appear here as hype moments are clipped!</div>`;
+    </div>`;
 
-  const bindActions = () => {
-    $$("[data-pause]").forEach(b => b.onclick = async () => {
-      try {
-        await api(`/api/live/${b.dataset.pause}/pause`, { method: "POST" });
-        toast("Session paused (progress safely saved)");
-        renderLive(false);
-      } catch (e) { toast(e.message, true); }
-    });
-    $$("[data-resume]").forEach(b => b.onclick = async () => {
-      try {
-        await api(`/api/live/${b.dataset.resume}/resume`, { method: "POST" });
-        toast("Session resumed · Continuing live capture");
-        renderLive(false);
-      } catch (e) { toast(e.message, true); }
-    });
-    $$("[data-saverec]").forEach(b => b.onclick = async () => {
-      try {
-        toast("Saving full stream recording to clips/recordings/...");
-        const res = await api(`/api/live/${b.dataset.saverec}/save`, { method: "POST" });
-        toast(`Full recording saved: ${res.filename} (${res.size_mb} MB) ✓`);
-      } catch (e) { toast(e.message, true); }
-    });
-    $$("[data-stop]").forEach(b => b.onclick = async () => {
-      if (!confirm("Stop monitoring this live stream? Buffer and clips are kept safely.")) return;
-      await api("/api/live/" + b.dataset.stop, { method: "DELETE" });
-      renderLive(true);
-    });
-    $$("[data-delclip]").forEach(b => b.onclick = async () => {
-      const isPurge = b.dataset.purge === "true";
-      const promptMsg = isPurge
-        ? "Remove this card from view?"
-        : "Delete video media to free storage space? Your AI training rating and feedback will be permanently preserved.";
-      if (!confirm(promptMsg)) return;
-      await api("/api/live/clips/" + b.dataset.delclip + (isPurge ? "?purge=true" : ""), { method: "DELETE" });
-      toast(isPurge ? "Card removed" : "Video file deleted · AI taste feedback safely preserved in ai_feedback.json ✓");
-      renderLive(true);
-    });
-    $$(".star-btn").forEach(btn => btn.onclick = async () => {
-      const parent = btn.closest(".star-rating");
-      const fn = parent.dataset.fn;
-      const star = parseInt(btn.dataset.star, 10);
-      $$(".star-btn", parent).forEach(s => {
-        const sVal = parseInt(s.dataset.star, 10);
-        s.classList.toggle("active", sVal <= star);
-      });
-      const valEl = $(".rating-val", parent);
-      if (valEl) valEl.textContent = star + "/5";
-      try {
-        await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: star } });
-        toast(`Rated ${star}/5 ⭐ · AI judge trained with feedback!`);
-      } catch (e) {
-        toast(e.message, true);
+  const renderClipsHtml = () => st.clips.length ? st.clips.map(renderSingleClipHtml).join("") : `<div class="empty" style="grid-column:1/-1"><b>No live clips yet</b>Start watching a live stream above. Clips will automatically appear here as hype moments are clipped!</div>`;
+
+  const updateSessionsInPlace = (sessionsBox) => {
+    const sessions = st.sessions || [];
+    const currentCards = [...sessionsBox.querySelectorAll(".live-session-card")];
+    const currentSids = currentCards.map(c => c.dataset.sid).filter(Boolean);
+    const newSids = sessions.map(s => String(s.id));
+    if (currentSids.length !== newSids.length || currentSids.some((id, i) => id !== newSids[i])) {
+      sessionsBox.innerHTML = renderSessionsHtml();
+      return;
+    }
+    sessions.forEach(s => {
+      const card = sessionsBox.querySelector(`.live-session-card[data-sid="${s.id}"]`);
+      if (!card) return;
+      const t = s.telemetry || {};
+      const bufSec = t.buffer_seconds || 0;
+      const anzSec = t.analyzed_seconds || 0;
+      const bufMb = t.buffer_mb || 0;
+      const pct = t.progress_pct != null ? t.progress_pct : (s.running ? 100 : 0);
+      const status = t.status || (s.running ? 'idle' : 'stopped');
+      const isPaused = t.is_paused || status === 'paused';
+      const isCompleted = status === 'completed';
+      const isDraining = status === 'draining';
+      const activity = t.activity || (isCompleted ? 'All recorded stream buffer fully analyzed.' : s.running ? 'Listening to stream...' : 'Session stopped');
+      const events = t.recent_events || [];
+
+      card.className = `live-session-card ${s.running || isDraining ? 'active' : ''}`;
+      const statusWrap = card.querySelector(".live-status-wrap");
+      if (statusWrap) statusWrap.innerHTML = getStatusChip(status, s.running);
+
+      const actBtns = card.querySelector(".live-act-btns");
+      if (actBtns) {
+        actBtns.innerHTML = `
+          ${isCompleted
+            ? `<span class="chip ok" style="padding:4px 8px;font-size:11px">100% Processed ✓</span>`
+            : isDraining
+            ? `<span class="chip warn" style="padding:4px 8px;font-size:11px">Finishing Buffer...</span>`
+            : isPaused
+            ? `<button class="btn sm ok" data-resume="${s.id}">Resume ▶</button>`
+            : `<button class="btn sm warn" data-pause="${s.id}">Pause ⏸</button>`
+          }
+          <button class="btn sm ghost" data-saverec="${s.id}" title="Save full recorded stream buffer (.ts)">Save Recording 💾</button>
+          <button class="btn sm danger" data-stop="${s.id}">${isCompleted ? 'Clear ✕' : 'Stop Monitor ⏹'}</button>`;
       }
-    });
-    $$(".fchip").forEach(btn => btn.onclick = async () => {
-      const fn = btn.dataset.fn;
-      const tag = btn.dataset.tag;
-      const isAlreadyOn = btn.classList.contains("on");
-      $$(`.fchip[data-fn="${fn}"]`).forEach(c => c.classList.remove("on"));
-      if (!isAlreadyOn) btn.classList.add("on");
-      const newTag = isAlreadyOn ? "" : tag;
-      try {
-        await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: 0, tag: newTag } });
-        if (newTag) toast(`Tagged "${btn.textContent.trim()}" · AI feedback recorded!`);
-      } catch (e) {
-        toast(e.message, true);
+
+      const progBar = card.querySelector(".live-prog-bar");
+      if (progBar) {
+        progBar.style.width = Math.max(2, pct) + "%";
+        progBar.className = `live-prog-bar ${s.running && status !== 'idle' && !isPaused && !isCompleted ? 'busy' : ''}`;
+      }
+
+      const progText = card.querySelector(".live-prog-text");
+      if (progText) progText.innerHTML = `<b style="color:var(--tx)">${pct}% analyzed</b> (${fmtDuration(anzSec)} of ${fmtDuration(bufSec)} buffer · ${bufMb} MB)`;
+
+      const actEl = card.querySelector(".live-act-text");
+      if (actEl && actEl.textContent !== activity) actEl.textContent = activity;
+
+      const evFeed = card.querySelector(".live-events-feed");
+      const evCountEl = card.querySelector(".live-ev-count");
+      if (evCountEl) evCountEl.textContent = `Live Engine & AI Judge Activity (${events.length} events)`;
+      if (evFeed) {
+        const evSig = (events || []).map(e => e.time + e.type).join("|");
+        if (evFeed.dataset.evsig !== evSig) {
+          evFeed.dataset.evsig = evSig;
+          evFeed.innerHTML = events.length ? events.map(ev => `
+            <div class="live-event-row">
+              <span class="live-ev-time">${esc(ev.time)}</span>
+              <span class="live-ev-badge ${esc(ev.type)}">${getBadgeName(ev.type)}</span>
+              <div class="live-ev-msg">
+                <span>${esc(ev.text)}</span>
+                ${ev.reason ? `<div class="live-ev-reason">💡 AI Judge Note: ${esc(ev.reason)}</div>` : ''}
+              </div>
+            </div>
+          `).join('') : '<div class="muted small" style="padding:6px 0;text-align:center">Actively capturing stream buffer from start — audio scanning runs continuously...</div>';
+        }
       }
     });
   };
 
-  if (!full && $("#live-sessions-box") && $("#live-clips-box")) {
-    const currentSig = (st.clips || []).map(c => `${c.filename}:${c.hook_title || ''}:${c.duration || 0}`).join('|');
-    const clipsBox = $("#live-clips-box");
-    if (clipsBox.dataset.sig !== currentSig) {
-      clipsBox.innerHTML = renderClipsHtml();
-      clipsBox.dataset.sig = currentSig;
-      clipsBox.dataset.count = String(st.clips.length);
+  const updateClipsInPlace = (clipsBox) => {
+    const clips = st.clips || [];
+    if (!clips.length) {
+      if (!clipsBox.querySelector(".empty")) {
+        clipsBox.innerHTML = `<div class="empty" style="grid-column:1/-1"><b>No live clips yet</b>Start watching a live stream above. Clips will automatically appear here as hype moments are clipped!</div>`;
+      }
+      return;
     }
-    $("#live-sessions-box").innerHTML = renderSessionsHtml();
-    bindActions();
+    const emptyEl = clipsBox.querySelector(".empty");
+    if (emptyEl) emptyEl.remove();
+
+    const existingCardMap = new Map();
+    clipsBox.querySelectorAll(".clip[data-fn]").forEach(el => {
+      existingCardMap.set(el.dataset.fn, el);
+    });
+
+    const newFnSet = new Set(clips.map(c => c.filename));
+    existingCardMap.forEach((el, fn) => {
+      if (!newFnSet.has(fn)) el.remove();
+    });
+
+    clips.slice().reverse().forEach(c => {
+      const existing = existingCardMap.get(c.filename);
+      if (!existing) {
+        clipsBox.insertAdjacentHTML("afterbegin", renderSingleClipHtml(c));
+      } else {
+        const starRating = existing.querySelector(".star-rating");
+        if (starRating) {
+          const uRating = c.user_rating || 0;
+          starRating.querySelectorAll(".star-btn").forEach(s => {
+            const sVal = parseInt(s.dataset.star, 10);
+            s.classList.toggle("active", sVal <= uRating);
+          });
+          const valEl = starRating.querySelector(".rating-val");
+          if (valEl) valEl.textContent = uRating ? uRating + '/5' : 'Rate';
+        }
+        existing.querySelectorAll(".fchip").forEach(fchip => {
+          fchip.classList.toggle("on", fchip.dataset.tag === (c.user_tag || ""));
+        });
+        if (c.media_deleted && !existing.dataset.deleted) {
+          existing.dataset.deleted = "true";
+          const phone = existing.querySelector(".phone");
+          if (phone) {
+            phone.outerHTML = `
+              <div class="phone" style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.4);border-radius:8px;aspect-ratio:9/16;text-align:center;padding:14px">
+                <div style="font-size:30px;margin-bottom:8px">💾</div>
+                <b style="font-size:12px;color:var(--ok)">Video File Removed</b>
+                <span class="muted small" style="margin-top:4px">${c.freed_mb ? c.freed_mb + ' MB freed' : 'Space freed'}</span>
+                <span class="small" style="color:var(--ac);font-weight:600;margin-top:8px">✓ AI Taste Preserved</span>
+              </div>`;
+          }
+          const actRow = existing.querySelector(".body > .row:last-child");
+          if (actRow) {
+            actRow.innerHTML = `
+              <span class="muted small">Saved in data/ai_feedback.json</span>
+              <button class="btn sm danger" data-delclip="${esc(c.filename)}" data-purge="true" title="Remove this card from view">Remove Card ✕</button>`;
+          }
+        }
+      }
+    });
+  };
+
+  const setupDelegatedListeners = () => {
+    const sessionsBox = $("#live-sessions-box");
+    const clipsBox = $("#live-clips-box");
+
+    if (sessionsBox) {
+      sessionsBox.onclick = async (e) => {
+        const pauseBtn = e.target.closest("[data-pause]");
+        if (pauseBtn) {
+          try {
+            await api(`/api/live/${pauseBtn.dataset.pause}/pause`, { method: "POST" });
+            toast("Session paused (progress safely saved)");
+            renderLive(false);
+          } catch (err) { toast(err.message, true); }
+          return;
+        }
+        const resumeBtn = e.target.closest("[data-resume]");
+        if (resumeBtn) {
+          try {
+            await api(`/api/live/${resumeBtn.dataset.resume}/resume`, { method: "POST" });
+            toast("Session resumed · Continuing live capture");
+            renderLive(false);
+          } catch (err) { toast(err.message, true); }
+          return;
+        }
+        const saveRecBtn = e.target.closest("[data-saverec]");
+        if (saveRecBtn) {
+          try {
+            toast("Saving full stream recording to clips/recordings/...");
+            const res = await api(`/api/live/${saveRecBtn.dataset.saverec}/save`, { method: "POST" });
+            toast(`Full recording saved: ${res.filename} (${res.size_mb} MB) ✓`);
+          } catch (err) { toast(err.message, true); }
+          return;
+        }
+        const stopBtn = e.target.closest("[data-stop]");
+        if (stopBtn) {
+          if (!confirm("Stop monitoring this live stream? Buffer and clips are kept safely.")) return;
+          await api("/api/live/" + stopBtn.dataset.stop, { method: "DELETE" });
+          renderLive(true);
+          return;
+        }
+      };
+    }
+
+    if (clipsBox) {
+      clipsBox.onclick = async (e) => {
+        const starBtn = e.target.closest(".star-btn");
+        if (starBtn) {
+          const parent = starBtn.closest(".star-rating");
+          const fn = parent.dataset.fn;
+          const star = parseInt(starBtn.dataset.star, 10);
+          parent.querySelectorAll(".star-btn").forEach(s => {
+            const sVal = parseInt(s.dataset.star, 10);
+            s.classList.toggle("active", sVal <= star);
+          });
+          const valEl = parent.querySelector(".rating-val");
+          if (valEl) valEl.textContent = star + "/5";
+          try {
+            await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: star } });
+            toast(`Rated ${star}/5 ⭐ · AI judge trained with feedback!`);
+          } catch (err) { toast(err.message, true); }
+          return;
+        }
+        const fchip = e.target.closest(".fchip");
+        if (fchip) {
+          const fn = fchip.dataset.fn;
+          const tag = fchip.dataset.tag;
+          const isAlreadyOn = fchip.classList.contains("on");
+          const card = fchip.closest(".clip");
+          if (card) {
+            card.querySelectorAll(`.fchip[data-fn="${fn}"]`).forEach(c => c.classList.remove("on"));
+          }
+          if (!isAlreadyOn) fchip.classList.add("on");
+          const newTag = isAlreadyOn ? "" : tag;
+          try {
+            await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: 0, tag: newTag } });
+            if (newTag) toast(`Tagged "${fchip.textContent.trim()}" · AI feedback recorded!`);
+          } catch (err) { toast(err.message, true); }
+          return;
+        }
+        const delBtn = e.target.closest("[data-delclip]");
+        if (delBtn) {
+          const fn = delBtn.dataset.delclip;
+          const isPurge = delBtn.dataset.purge === "true";
+          const promptMsg = isPurge
+            ? "Remove this card from view?"
+            : "Delete video media to free storage space? Your AI training rating and feedback will be permanently preserved.";
+          if (!confirm(promptMsg)) return;
+          try {
+            await api("/api/live/clips/" + fn + (isPurge ? "?purge=true" : ""), { method: "DELETE" });
+            toast(isPurge ? "Card removed" : "Video file deleted · AI taste feedback safely preserved in ai_feedback.json ✓");
+            renderLive(false);
+          } catch (err) { toast(err.message, true); }
+          return;
+        }
+      };
+    }
+  };
+
+  if (!full && $("#live-sessions-box") && $("#live-clips-box")) {
+    updateSessionsInPlace($("#live-sessions-box"));
+    updateClipsInPlace($("#live-clips-box"));
     return;
   }
 
@@ -1108,7 +1285,7 @@ async function renderLive(full = true) {
       renderLive(true);
     } catch (e) { toast(e.message, true); }
   };
-  bindActions();
+  setupDelegatedListeners();
 }
 
 /* ---------------- CAMPAIGNS ---------------- */

@@ -215,8 +215,16 @@ def _add_fine_detections(all_detections, fine) -> int:
     added = 0
     for t, b in fine:
         cx, cy = b[0] + b[2] / 2.0, b[1] + b[3] / 2.0
-        if any(abs(t0 - t) < 1e-6 and abs(cx - (b0[0] + b0[2] / 2.0)) < b[2] * 0.6 and abs(cy - (b0[1] + b0[3] / 2.0)) < b[3] * 0.6
-               for t0, b0 in all_detections):
+        is_dup = False
+        for t0, b0 in all_detections:
+            if abs(t0 - t) < 0.05:
+                c0x, c0y = b0[0] + b0[2] / 2.0, b0[1] + b0[3] / 2.0
+                max_w = max(b[2], b0[2])
+                max_h = max(b[3], b0[3])
+                if abs(cx - c0x) < max_w * 0.75 and abs(cy - c0y) < max_h * 0.75:
+                    is_dup = True
+                    break
+        if is_dup:
             continue
         all_detections.append((t, b))
         added += 1
@@ -569,20 +577,36 @@ def detect_facecam(
         except Exception as e:
             logger.warning(f"Using known cams failed: {e}")
 
-    # How many people are on screen at once (big faces, outside any cam)
+    # How many persistent people are on screen at once (must be two stable clusters >= 45% presence)
     def _in_cam(b):
         cx, cy = b[0] + b[2] / 2.0, b[1] + b[3] / 2.0
         return any(r[0] <= cx <= r[0] + r[2] and r[1] <= cy <= r[1] + r[3] for r in (c["rect"] for c in cams))
-    per_t: Dict[float, int] = {}
-    for t, b in all_detections:
-        if b[3] >= 0.10 * frame_h and not _in_cam(b):
-            per_t[round(t, 2)] = per_t.get(round(t, 2), 0) + 1
-    group_ratio = sum(1 for v in per_t.values() if v >= 2) / max(1, total_samples)
-    people = 2 if group_ratio >= 0.3 else 1
+    # How many persistent people are on screen at once:
+    # A true co-host or duo requires two distinct, genuine faces sitting together:
+    # 1. Both stable clusters have >= 45% presence
+    # 2. Both faces are substantial size (>= 0.12 * frame_h)
+    # 3. Both are horizontally separated (sitting side-by-side: abs(cx1 - cx2) >= 0.20 * frame_w)
+    # 4. Both are at similar eye/head level (abs(cy1 - cy2) < 0.20 * frame_h, not one in upper frame and one on the floor/torso)
+    stable_cls = _stable_clusters(all_detections, frame_w, frame_h, total_samples, min_ratio=0.45)
+    big_stable_cls = [c for c in stable_cls if c["median_box"][3] >= 0.12 * frame_h and not _in_cam(c["median_box"])]
+    if len(big_stable_cls) >= 2:
+        c1, c2 = big_stable_cls[:2]
+        cx1 = c1["median_box"][0] + c1["median_box"][2] / 2.0
+        cy1 = c1["median_box"][1] + c1["median_box"][3] / 2.0
+        cx2 = c2["median_box"][0] + c2["median_box"][2] / 2.0
+        cy2 = c2["median_box"][1] + c2["median_box"][3] / 2.0
+        is_side_by_side = (abs(cx1 - cx2) >= 0.20 * frame_w) and (abs(cy1 - cy2) < 0.20 * frame_h)
+        people = 2 if is_side_by_side else 1
+    else:
+        people = 1
 
-    # One picture, no separate cam: default to "gameplay" (Framed: the whole 16:9 picture in
-    # the middle over a blurred fill). Follow / Face stay available per clip.
-    single = str(fc_cfg.get("single_source_layout", "gameplay"))
+    # Single source layout: if a streamer is clearly on camera (people == 1 and presence_ratio >= 0.35),
+    # default to "irl" (portrait face-tracking crop) rather than letterboxed "gameplay".
+    single_cfg = fc_cfg.get("single_source_layout")
+    if single_cfg:
+        single = str(single_cfg)
+    else:
+        single = "irl" if (people == 1 and presence_ratio >= 0.35) else "gameplay"
 
     # Truly distinct co-op duo cams: both must have high face presence (>= 0.50) in this clip
     # and both must be real boxed cams (kind == "box"), with physical separation on screen
@@ -593,9 +617,11 @@ def detect_facecam(
         and abs(cams[0]["rect"][0] - cams[1]["rect"][0]) > frame_w * 0.30
     )
 
-    if presence_ratio >= thresh and is_big and stable:
-        # One big face that stays put: Just Chatting / reaction cam filling the screen
-        stream_type, layout, found = "just_chatting", single, True
+    if presence_ratio >= thresh and is_big:
+        # Full-screen camera / Just Chatting / reaction stream
+        stream_type = "just_chatting"
+        layout = "irl" if people == 1 else "gameplay"
+        found = True
     elif is_true_duo:
         # Two streamers' cams (duo / co-op stream): both cams on top, game below
         cams = sorted(cams[:2], key=lambda c: c["rect"][0])
@@ -605,14 +631,16 @@ def detect_facecam(
         best_cam = max(cams, key=lambda c: (c.get("kind") == "box", c.get("presence", 0.0), -c["rect"][2]))
         cams = [best_cam]
         stream_type, layout, found = "gaming_facecam", "split", True
-    elif presence_ratio >= thresh and not is_big and near_edge and (
-            (stable and other_ratio < 0.35) or drift <= 0.012 or cam_pick is not None):
-        # Cam found by its face only (no clear outline). A very still face near the edge is
-        # a cam even when the game shows faces of its own (story games).
+    elif presence_ratio >= thresh and near_edge and not is_big:
+        # Corner facecam without a strict border (e.g. green-screened or borderless webcam)
+        cam_box = padded_box
+        cams = [{"rect": cam_box, "face_box": med_box, "presence": presence_ratio, "corner": corner, "kind": "corner_face"}]
         stream_type, layout, found = "gaming_facecam", "split", True
     elif any_face_ratio >= 0.30:
-        # People filmed by a camera, moving around or several of them: IRL / event stream
-        stream_type, layout, found = "irl", single, False
+        # Streamer filmed by camera, moving or talking: IRL / camera stream
+        stream_type = "irl"
+        layout = "irl" if people == 1 else "gameplay"
+        found = (layout == "irl")
     else:
         stream_type, layout, found = "gaming", "gameplay", False
 

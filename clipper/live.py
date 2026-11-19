@@ -748,6 +748,7 @@ class LiveStreamClipper:
                 captions_file = os.path.join(self.output_dir, f"{clip_base}_captions.txt")
 
                 clip_meta = {
+                    "created_at": time.time(),
                     "timestamp": ts_str,
                     "filename": os.path.basename(final_path),
                     "path": final_path,

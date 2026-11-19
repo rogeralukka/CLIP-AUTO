@@ -5,6 +5,7 @@ Run:  .\\.venv\\Scripts\\python.exe server.py      then open http://127.0.0.1:87
 Wraps the existing pipeline/queue. Nothing here uploads anything anywhere; it only
 serves files on your own machine to your own browser (bound to 127.0.0.1).
 """
+import datetime
 import glob
 import json
 import os
@@ -468,6 +469,46 @@ class LiveIn(BaseModel):
     quality: Optional[str] = "data_saver"
 
 
+_live_clips_cache: List[Dict[str, Any]] = []
+_live_clips_cache_time: float = 0.0
+_live_clips_cache_lock = threading.Lock()
+
+
+def _get_clip_creation_time(meta_path: str, meta_data: Optional[Dict[str, Any]] = None) -> float:
+    """Return an immutable timestamp for a clip so rating/editing it never changes its display order."""
+    if meta_data and meta_data.get("created_at"):
+        try:
+            return float(meta_data["created_at"])
+        except (ValueError, TypeError):
+            pass
+
+    # Check the mp4 file's modification time (mp4 is never written to on rating/feedback)
+    mp4_path = meta_path.replace("_metadata.json", ".mp4")
+    if os.path.isfile(mp4_path):
+        try:
+            return os.path.getmtime(mp4_path)
+        except Exception:
+            pass
+
+    # Extract date from folder (e.g. 2026-11-19) and time from filename (e.g. 132758)
+    try:
+        parts = os.path.normpath(meta_path).split(os.sep)
+        date_str = parts[-2] if len(parts) >= 2 else ""
+        fn = parts[-1]
+        m = re.search(r"(\d{2})(\d{2})(\d{2})", fn)
+        if m and re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+            time_str = f"{date_str} {m.group(1)}:{m.group(2)}:{m.group(3)}"
+            dt = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+            return dt.timestamp()
+    except Exception:
+        pass
+
+    try:
+        return os.path.getctime(meta_path)
+    except Exception:
+        return os.path.getmtime(meta_path)
+
+
 @app.get("/api/live")
 def live_status():
     sessions = []
@@ -487,15 +528,30 @@ def live_status():
             except Exception as e:
                 sess_info["telemetry"] = {"status": "error", "activity": str(e), "recent_events": []}
         sessions.append(sess_info)
-    clips = []
-    meta_files = glob.glob(os.path.join("clips", "live", "*", "*_metadata.json"))
-    meta_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    for meta in meta_files[:60]:
-        try:
-            with open(meta, "r", encoding="utf-8") as f:
-                clips.append(json.load(f))
-        except Exception:
-            pass
+
+    global _live_clips_cache, _live_clips_cache_time
+    now = time.time()
+    with _live_clips_cache_lock:
+        if now - _live_clips_cache_time < 3.0 and _live_clips_cache:
+            clips = _live_clips_cache
+        else:
+            meta_files = glob.glob(os.path.join(ROOT, "clips", "live", "*", "*_metadata.json"))
+            meta_files.sort(key=_get_clip_creation_time, reverse=True)
+            loaded_clips = []
+            for meta in meta_files[:60]:
+                try:
+                    with open(meta, "r", encoding="utf-8") as f:
+                        c_data = json.load(f)
+                        if "created_at" not in c_data:
+                            c_data["created_at"] = _get_clip_creation_time(meta, c_data)
+                        loaded_clips.append(c_data)
+                except Exception:
+                    pass
+            loaded_clips.sort(key=lambda c: float(c.get("created_at") or 0.0), reverse=True)
+            _live_clips_cache = loaded_clips
+            _live_clips_cache_time = now
+            clips = loaded_clips
+
     cfg = load_config()
     saved_sens = cfg.get("signals", {}).get("live_sensitivity", 2.2)
     return {"sessions": sessions, "clips": clips, "sensitivity": saved_sens}
@@ -673,6 +729,19 @@ def live_delete_clip(filename: str, purge: bool = False):
         except Exception:
             pass
 
+    # Update in-memory live clips cache
+    global _live_clips_cache
+    with _live_clips_cache_lock:
+        if purge:
+            _live_clips_cache = [c for c in _live_clips_cache if c.get("filename") != clean_fn and os.path.basename(c.get("path", "")) != clean_fn]
+        else:
+            for c in _live_clips_cache:
+                if c.get("filename") == clean_fn or os.path.basename(c.get("path", "")) == clean_fn:
+                    c["media_deleted"] = True
+                    c["freed_mb"] = freed_mb
+                    c["path"] = ""
+                    break
+
     return {
         "ok": True,
         "deleted": deleted,
@@ -696,8 +765,14 @@ def clip_feedback(body: ClipFeedbackIn):
     base = os.path.splitext(clean_fn)[0]
     updated_meta = None
 
-    # Search across clips/live/ and clips/job_*/
-    matched_files = glob.glob(os.path.join(ROOT, "clips", "**", f"*{base}*metadata.json"), recursive=True)
+    # Targeted search across clips/live/ date directories first, then job dirs
+    matched_files = glob.glob(os.path.join(ROOT, "clips", "live", "*", f"{base}*_metadata.json"))
+    if not matched_files:
+        matched_files = glob.glob(os.path.join(ROOT, "clips", "live", "*", f"{base}*.json"))
+    if not matched_files:
+        matched_files = glob.glob(os.path.join(ROOT, "clips", "job_*", f"{base}*.json"))
+    if not matched_files:
+        matched_files = glob.glob(os.path.join(ROOT, "clips", "**", f"*{base}*metadata.json"), recursive=True)
     if not matched_files:
         matched_files = glob.glob(os.path.join(ROOT, "clips", "**", f"{base}.json"), recursive=True)
 
@@ -717,6 +792,18 @@ def clip_feedback(body: ClipFeedbackIn):
             break
         except Exception:
             pass
+
+    # Update in-memory live clips cache immediately in-place
+    with _live_clips_cache_lock:
+        for c in _live_clips_cache:
+            if c.get("filename") == clean_fn or os.path.basename(c.get("path", "")) == clean_fn:
+                if body.rating > 0:
+                    c["user_rating"] = body.rating
+                if body.tag is not None:
+                    c["user_tag"] = body.tag
+                if body.notes:
+                    c["user_notes"] = body.notes
+                break
 
     feedback_file = os.path.join(ROOT, "data", "ai_feedback.json")
     os.makedirs(os.path.dirname(feedback_file), exist_ok=True)
