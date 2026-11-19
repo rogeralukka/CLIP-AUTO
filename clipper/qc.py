@@ -139,7 +139,8 @@ def perform_qc_check(
 
     # 1. Duration check
     camp = campaign or {}
-    campaign_min = float(camp.get("min_clip_length") or camp.get("min_length_seconds") or 15.0)
+    default_min = float(qc_cfg.get("min_clip_length") or cfg.get("signals", {}).get("default_min_clip_length", 30.0))
+    campaign_min = float(camp.get("min_clip_length") or camp.get("min_length_seconds") or default_min)
     campaign_max = float(camp.get("max_clip_length") or camp.get("max_length_seconds") or 180.0)
     duration_ok = (campaign_min - 0.5) <= duration <= (campaign_max + 0.5)
 

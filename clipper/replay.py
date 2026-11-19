@@ -211,7 +211,7 @@ def run_old_engine(
         before=20,
         after=30,
         window=5,
-        min_clip_length=20.0,
+        min_clip_length=30.0,
         max_clip_length=70.0,
     )
 

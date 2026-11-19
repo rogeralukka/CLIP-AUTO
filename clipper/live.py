@@ -588,12 +588,18 @@ class LiveStreamClipper:
         self._probe_cams(curr_duration)
         rendered_clips = []
         preset = load_preset(self.preset_name)
+        min_clip_len = float((self.campaign or {}).get("min_clip_length") or cfg.get("signals", {}).get("default_min_clip_length", 30.0))
 
         for m in new_moments:
             with _gpu_lock:
                 start_s = m["start"]
                 end_s = m["end"]
                 dur = end_s - start_s
+                if dur < min_clip_len:
+                    logger.info(f"Skipping moment at {start_s:.1f}s: duration {dur:.1f}s < min {min_clip_len:.1f}s")
+                    self._record_event("judge_reject", f"Candidate rejected: Duration under {min_clip_len:.0f}s minimum ({dur:.1f}s)")
+                    continue
+
                 ts_str = datetime.datetime.now().strftime("%H%M%S")
                 clean_id = re.sub(r"[^a-zA-Z0-9_]", "", self.stream_id)[:8]
                 clip_base = f"live_{clean_id}_{ts_str}_{int(start_s)}s"
@@ -618,17 +624,32 @@ class LiveStreamClipper:
                     min_g = float(silence_cfg.get("dead_air_min_gap_seconds", 0.40))
                     tgt_g = float(silence_cfg.get("dead_air_target_gap_seconds", 0.15))
                     tight_rough = os.path.join(self.output_dir, f"rough_tight_{clip_base}.mp4")
-                    words, tight_path = compress_internal_dead_air(
+                    words_tight, tight_path = compress_internal_dead_air(
                         words=words,
                         rough_path=rough_path,
                         output_path=tight_rough,
                         min_gap_sec=min_g,
                         target_gap_sec=tgt_g,
+                        min_clip_length=min_clip_len,
                         use_cpu=self.use_cpu,
                     )
                     if tight_path != rough_path and os.path.isfile(tight_path):
-                        rough_path = tight_path
-                        dur = get_media_duration_seconds(rough_path)
+                        tight_dur = get_media_duration_seconds(tight_path)
+                        if tight_dur < min_clip_len:
+                            logger.info(f"Tight dead-air trim ({tight_dur:.1f}s) < min {min_clip_len:.1f}s. Keeping original uncompressed rough clip ({dur:.1f}s).")
+                            try:
+                                os.remove(tight_path)
+                            except Exception:
+                                pass
+                        else:
+                            rough_path = tight_path
+                            dur = tight_dur
+                            words = words_tight
+
+                if dur < min_clip_len:
+                    logger.info(f"Skipping moment at {start_s:.1f}s after dead-air trim: duration {dur:.1f}s < min {min_clip_len:.1f}s")
+                    self._record_event("judge_reject", f"Candidate rejected: Duration under {min_clip_len:.0f}s minimum ({dur:.1f}s)")
+                    continue
 
                 hook_title = m.get("hook_title")
                 score = float(m.get("score", 5.0))

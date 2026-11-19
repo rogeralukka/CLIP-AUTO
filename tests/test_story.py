@@ -108,6 +108,41 @@ class TestStoryHunter(unittest.TestCase):
             self.assertTrue("Great-Moment Buffer" in accepted_capped[1]["decision_reason"])
             self.assertTrue("Exceeded hourly quota cap" in rejected_capped[0]["decision_reason"])
 
+    def test_min_clip_duration_enforcement_thirty_seconds(self):
+        """Verify that any candidate under 30 seconds is strictly rejected by the pool engine."""
+        from clipper.story import hunt_story_candidates_and_pool
+
+        with patch("clipper.story.transcribe_full_audio") as mock_trans, \
+             patch("clipper.story.is_ollama_available", return_value=(True, ["qwen3:14b"])), \
+             patch("clipper.story.hunt_story_candidates_in_window") as mock_hunt, \
+             patch("clipper.story.extract_action_candidates", return_value=[]):
+
+            words = [{"word": f"word{i}", "start": float(i), "end": float(i) + 0.5} for i in range(25)]
+            mock_trans.return_value = {"words": words}
+            mock_hunt.return_value = [
+                # 12-second fragment (should be rejected)
+                {"start": 10.0, "end": 22.0, "duration": 12.0, "score": 9.5, "payoff_inside": True, "sub_scores": {"standalone": 9.0}},
+                # 35-second moment (should be accepted)
+                {"start": 100.0, "end": 135.0, "duration": 35.0, "score": 8.0, "payoff_inside": True, "sub_scores": {"standalone": 8.0}},
+            ]
+
+            res = hunt_story_candidates_and_pool(
+                slice_wav="dummy.wav",
+                slice_duration=600.0,
+                max_clips_per_hour=10,
+            )
+
+            accepted = [c for c in res if c.get("status") == "accepted"]
+            rejected = [c for c in res if c.get("status") == "rejected"]
+
+            self.assertEqual(len(accepted), 1)
+            self.assertEqual(accepted[0]["start"], 100.0)
+            self.assertGreaterEqual(accepted[0]["duration"], 30.0)
+
+            self.assertEqual(len(rejected), 1)
+            self.assertEqual(rejected[0]["start"], 10.0)
+            self.assertTrue("Duration under 30s minimum" in rejected[0]["decision_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

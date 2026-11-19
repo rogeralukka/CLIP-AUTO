@@ -311,7 +311,7 @@ def refine_boundaries_with_llm(
     endpoint: str,
     model: str,
     timeout: float,
-    min_len: float = 15.0,
+    min_len: float = 30.0,
     max_len: float = 90.0,
 ) -> bool:
     """Ask the local model where the story around this moment starts and where it is over.
@@ -416,7 +416,7 @@ def rank_moments_with_llm(
     try:
         for m in candidates:
             if llm_cfg.get("refine_boundaries", True):
-                lim = m.get("len_limits") or (15.0, 90.0)
+                lim = m.get("len_limits") or (30.0, 90.0)
                 try:
                     if refine_boundaries_with_llm(m, full_transcript_data, endpoint, model_name, timeout,
                                                   min_len=float(lim[0]), max_len=float(lim[1])):

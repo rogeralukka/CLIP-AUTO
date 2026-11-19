@@ -12,6 +12,7 @@ signals:
   max_clips_per_hour: 10         # Per-hour maximum quota cap per streamer (max 10 clips/hr)
   hourly_quota_buffer: 3         # Flexible buffer slots (+2 to +3) so high-scoring great moments aren't discarded
   buffer_score_threshold: 6.5    # Minimum virality score required to use a buffer slot beyond base cap
+  default_min_clip_length: 30.0  # Minimum clip length in seconds (strict cap: no clips under 30s)
   default_max_clip_length: 180.0 # Maximum clip length in seconds (up to 3 minutes for Shorts/TikTok)
   rolling_window_seconds: 600    # 10 minutes baseline window for robust z-score
   merge_gap_seconds: 15          # Merge nearby peak moments within this gap
@@ -79,6 +80,7 @@ polish:
     dead_air_target_gap_seconds: 0.15
 
 qc:
+  min_clip_length: 30.0          # Strict minimum clip length verification (seconds)
   loudness_tolerance_lu: 2.0
   music_silence_words_duration: 8.0
 

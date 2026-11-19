@@ -87,7 +87,7 @@ class TestPhase6(unittest.TestCase):
             self.assertGreater(size2, 1024)
 
             # 3. Verify QC on re-rendered clip
-            qc = perform_qc_check(clip_path, duration=20.0, layout="split")
+            qc = perform_qc_check(clip_path, duration=35.0, layout="split")
             self.assertIn(qc["status"], ["PASS", "WARN"])
 
 

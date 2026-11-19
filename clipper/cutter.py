@@ -340,6 +340,7 @@ def compress_internal_dead_air(
     output_path: str,
     min_gap_sec: float = 0.40,
     target_gap_sec: float = 0.15,
+    min_clip_length: float = 0.0,
     use_cpu: bool = False,
     job_id: Optional[str] = None,
 ) -> Tuple[List[Any], str]:
@@ -347,7 +348,8 @@ def compress_internal_dead_air(
 
     Returns (retimed_words, compressed_video_path).
     Retimes all word subtitle timestamps to match the shortened video track.
-    If no gap exceeds min_gap_sec, returns the original words and rough_path unchanged.
+    If no gap exceeds min_gap_sec or if trimming would drop the clip below min_clip_length,
+    returns the original words and rough_path unchanged.
     """
     if not words or len(words) < 2 or not os.path.isfile(rough_path):
         return words, rough_path
@@ -396,6 +398,11 @@ def compress_internal_dead_air(
         segments.append((curr_t, total_dur))
 
     if len(segments) <= 1:
+        return words, rough_path
+
+    post_dur = sum(seg_e - seg_s for seg_s, seg_e in segments)
+    if min_clip_length > 0.0 and post_dur < min_clip_length:
+        logger.info(f"Dead-air trimming would reduce clip duration to {post_dur:.1f}s (< {min_clip_length:.1f}s minimum). Skipping dead-air compression.")
         return words, rough_path
 
     ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"

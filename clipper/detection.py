@@ -163,7 +163,7 @@ def detect_audio_loudness_moments(
     video_path: str,
     window: int = 6,
     z_thresh: float = 1.8,
-    min_duration: int = 15,
+    min_duration: int = 30,
     max_duration: int = 60,
     before: int = 15,
     after: int = 25,
@@ -296,7 +296,7 @@ def find_moments(
     full_transcript_data: Optional[Dict[str, Any]] = None,
     heatmap_data: Optional[Any] = None,
     vod_id: Optional[str] = None,
-    min_clip_length: float = 15.0,
+    min_clip_length: float = 30.0,
     max_clip_length: float = 180.0,
     progress_cb: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
@@ -446,6 +446,9 @@ def find_moments(
             hype_curve=composite_curve,
             topics=topics,
         )
+
+        if et - st < min_clip_length:
+            continue
 
         # Build signal breakdown dictionary for this peak second
         p_idx = min(dur_int - 1, max(0, int(peak_center)))

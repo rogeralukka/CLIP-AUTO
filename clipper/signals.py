@@ -494,7 +494,7 @@ def snap_moment_boundaries(
     peak_time: float,
     stream_duration: float,
     full_transcript_data: Optional[Dict[str, Any]] = None,
-    min_length: float = 15.0,
+    min_length: float = 30.0,
     max_length: float = 180.0,
     max_lead: float = 5.0,
     max_trail: float = 5.0,

@@ -192,9 +192,10 @@ Identify UP TO 2 candidate short-form video moments (TikTok / Shorts / Reels) th
 
 RULES FOR CANDIDATE SELECTION:
 1. Every candidate MUST have a HOOK (setup/conflict in first 3s) and an internal PAYOFF (punchline/climax/reaction).
-2. Word index precision: Specify start_word_index and end_word_index using the bracketed numbers like [0], [1].
-3. Standalone test: A stranger scrolling TikTok must understand the situation with ZERO prior stream context.
-4. Score each pillar strictly from 0.0 to 10.0:
+2. DURATION CONSTRAINT: Candidate clips MUST be AT LEAST 30 SECONDS long (between 30s and 120s). Do NOT select short 1-20s one-liners or fragments without the surrounding story context, setup, and aftermath.
+3. Word index precision: Specify start_word_index and end_word_index using the bracketed numbers like [0], [1].
+4. Standalone test: A stranger scrolling TikTok must understand the situation with ZERO prior stream context.
+5. Score each pillar strictly from 0.0 to 10.0:
    - hook: How strongly the opening 3 seconds arrests scrolling attention.
    - flow: How smoothly the story progresses without boring lulls.
    - emotion: streamer laughter, shock, rage, triumph, panic, or awe.
@@ -282,7 +283,19 @@ def hunt_story_candidates_in_window(
 
         snapped_s, snapped_e, clip_text = snap_word_indices_to_sentences(window_words, s_idx, e_idx)
         dur = snapped_e - snapped_s
-        if dur < 10.0 or dur > 120.0:
+
+        # Strict >= 30s minimum cap: expand outward to sentence boundaries if candidate is short
+        if dur < 30.0:
+            exp_s = s_idx
+            exp_e = e_idx
+            while exp_s > 0 and (float(window_words[exp_e].get("end", 0)) - float(window_words[exp_s].get("start", 0))) < 32.0:
+                exp_s -= 1
+            while exp_e < n_words - 1 and (float(window_words[exp_e].get("end", 0)) - float(window_words[exp_s].get("start", 0))) < 32.0:
+                exp_e += 1
+            snapped_s, snapped_e, clip_text = snap_word_indices_to_sentences(window_words, exp_s, exp_e)
+            dur = snapped_e - snapped_s
+
+        if dur < 30.0 or dur > 180.0:
             continue
 
         composite = calculate_virality_score(hook_sc, flow_sc, emot_sc, stan_sc)
@@ -342,11 +355,11 @@ def extract_action_candidates(
         comments=comments,
         video_path=slice_wav,
         z_thresh=sensitivity,
-        before=15,
-        after=35,
+        before=20,
+        after=40,
         window=5,
-        min_clip_length=15.0,
-        max_clip_length=60.0,
+        min_clip_length=30.0,
+        max_clip_length=120.0,
     )
 
     # 2. Visual motion energy
@@ -369,6 +382,8 @@ def extract_action_candidates(
         st = float(m["start"])
         et = float(m["end"])
         dur = et - st
+        if dur < 30.0:
+            continue
 
         # Count words in this window
         cand_words = []
@@ -652,8 +667,13 @@ def hunt_story_candidates_and_pool(
         stan_val = float(sub.get("standalone", 5.0 if c.get("standalone") else 2.0))
         payoff = bool(c.get("payoff_inside", True))
         score = float(c.get("score", 0.0))
+        c_dur = float(c.get("duration") or (c.get("end", 0.0) - c.get("start", 0.0)))
 
-        if not payoff:
+        if c_dur < 30.0:
+            c["status"] = "rejected"
+            c["decision_reason"] = f"Rejected: Duration under 30s minimum ({c_dur:.1f}s < 30.0s)"
+            rejected_pool.append(c)
+        elif not payoff:
             c["status"] = "rejected"
             c["decision_reason"] = "Rejected: Payoff/punchline cut off outside window"
             rejected_pool.append(c)
