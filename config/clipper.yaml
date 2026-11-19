@@ -10,6 +10,8 @@ audio:
 signals:
   use_story_hunter: true         # AutoClip/OpenShorts transcript-first sliding windows & 4-pillar ranking
   max_clips_per_hour: 10         # Per-hour maximum quota cap per streamer (max 10 clips/hr)
+  hourly_quota_buffer: 3         # Flexible buffer slots (+2 to +3) so high-scoring great moments aren't discarded
+  buffer_score_threshold: 6.5    # Minimum virality score required to use a buffer slot beyond base cap
   default_max_clip_length: 180.0 # Maximum clip length in seconds (up to 3 minutes for Shorts/TikTok)
   rolling_window_seconds: 600    # 10 minutes baseline window for robust z-score
   merge_gap_seconds: 15          # Merge nearby peak moments within this gap

@@ -89,17 +89,23 @@ class TestStoryHunter(unittest.TestCase):
             accepted = [c for c in res if c.get("status") == "accepted"]
             self.assertEqual(len(accepted), 3, "All 3 moments should be accepted when under 10/hr cap")
 
-            # 2. When remaining_quota is explicitly set to 1 (e.g. streamer already had 9 clips this hour):
+            # 2. When remaining_quota is 1 and remaining_buffer_quota is 1 (overflow buffer active):
+            # Candidate 1 (score 8.5) takes base quota.
+            # Candidate 2 (score 7.5 >= 6.5) is rescued by the great-moment buffer!
+            # Candidate 3 (score 6.5) is rejected as buffer slot limit (1) was reached.
             res_capped = hunt_story_candidates_and_pool(
                 slice_wav="dummy.wav",
                 slice_duration=600.0,
                 max_clips_per_hour=10,
                 remaining_quota=1,
+                remaining_buffer_quota=1,
+                buffer_score_threshold=7.0,
             )
             accepted_capped = [c for c in res_capped if c.get("status") == "accepted"]
             rejected_capped = [c for c in res_capped if c.get("status") == "rejected"]
-            self.assertEqual(len(accepted_capped), 1)
-            self.assertEqual(len(rejected_capped), 2)
+            self.assertEqual(len(accepted_capped), 2, "Base quota + 1 buffer clip should be accepted")
+            self.assertEqual(len(rejected_capped), 1)
+            self.assertTrue("Great-Moment Buffer" in accepted_capped[1]["decision_reason"])
             self.assertTrue("Exceeded hourly quota cap" in rejected_capped[0]["decision_reason"])
 
 

@@ -517,10 +517,14 @@ class LiveStreamClipper:
             try:
                 from .story import hunt_story_candidates_and_pool
                 hourly_cap = int(signals_cfg.get("max_clips_per_hour", 10))
+                quota_buffer = int(signals_cfg.get("hourly_quota_buffer", 3))
+                buffer_thresh = float(signals_cfg.get("buffer_score_threshold", 6.5))
+
                 # True rolling 1-hour window budget: count clips made for this stream in the last 3600s
                 one_hour_ago = max(0.0, end_offset - 3600.0)
                 clips_in_last_hour = sum(1 for c in self.clips_done if float(c.get("start_seconds", 0)) >= one_hour_ago)
                 remaining_hourly_quota = max(0, hourly_cap - clips_in_last_hour)
+                remaining_buffer_quota = max(0, (hourly_cap + quota_buffer) - clips_in_last_hour)
 
                 pooled = hunt_story_candidates_and_pool(
                     slice_wav=tail_wav,
@@ -530,6 +534,8 @@ class LiveStreamClipper:
                     sensitivity=self.sensitivity,
                     max_clips_per_hour=hourly_cap,
                     remaining_quota=remaining_hourly_quota,
+                    remaining_buffer_quota=remaining_buffer_quota,
+                    buffer_score_threshold=buffer_thresh,
                     comments=comments,
                     endpoint=llm_cfg.get("endpoint", "http://localhost:11434"),
                     model_name=llm_cfg.get("model", "qwen3:14b"),
@@ -537,6 +543,8 @@ class LiveStreamClipper:
                 for cand in pooled:
                     if cand.get("status") == "accepted":
                         found.append(cand)
+                        if "Great-Moment Buffer" in cand.get("decision_reason", ""):
+                            self._record_event("judge_approve", f"🌟 Rescued by 2-3 clip buffer! ({cand.get('decision_reason', '')})", score=cand.get("score"), reason=cand.get("decision_reason"))
                     else:
                         self._record_event("judge_reject", f"Candidate rejected ({cand.get('decision_reason', '')})", score=cand.get("score"), reason=cand.get("decision_reason"))
             except Exception as e:

@@ -568,6 +568,8 @@ def hunt_story_candidates_and_pool(
     window_length_sec: float = 240.0,
     window_overlap_sec: float = 30.0,
     remaining_quota: Optional[int] = None,
+    remaining_buffer_quota: Optional[int] = None,
+    buffer_score_threshold: float = 6.5,
 ) -> List[Dict[str, Any]]:
     """Complete Step 2 Pipeline: Story Hunter + Action Pool + Unified 4-Pillar Ranking."""
     logger.info(f"Starting Story Hunter + Action Pool pipeline on slice ({slice_duration:.1f}s)...")
@@ -667,30 +669,46 @@ def hunt_story_candidates_and_pool(
             c["status"] = "accepted"
             accepted_pool.append(c)
 
-    # 7. Hourly Maximum Cap per Streamer (capped at max_clips_per_hour, default 10/hr)
+    # 7. Hourly Maximum Cap per Streamer (base max_clips_per_hour + 2-3 clip buffer for great moments)
     if remaining_quota is not None:
-        allowed_quota = max(0, int(remaining_quota))
+        base_quota = max(0, int(remaining_quota))
     elif slice_duration <= 3600.0:
         # For sub-hour windows, allow up to the full hourly quota so bursty viral moments aren't dropped
-        allowed_quota = max(1, max_clips_per_hour)
+        base_quota = max(1, max_clips_per_hour)
     else:
         slice_hours = slice_duration / 3600.0
-        allowed_quota = max(1, int(math.ceil(slice_hours * max_clips_per_hour)))
+        base_quota = max(1, int(math.ceil(slice_hours * max_clips_per_hour)))
+
+    max_buffer_slots = 3 if remaining_buffer_quota is None else max(0, int(remaining_buffer_quota))
 
     # Sort accepted pool descending by composite virality score
     accepted_pool.sort(key=lambda c: float(c.get("score", 0.0)), reverse=True)
 
-    # Keep top N within quota; any beyond quota are marked rejected with clear reason
-    final_accepted = accepted_pool[:allowed_quota]
-    overflow = accepted_pool[allowed_quota:]
+    # 1. Fill base quota
+    final_accepted = accepted_pool[:base_quota]
+    overflow = accepted_pool[base_quota:]
+
+    # 2. Check overflow candidates against the 2-3 great-clip buffer
+    used_buffer_slots = 0
     for c in overflow:
-        c["status"] = "rejected"
-        c["decision_reason"] = f"Rejected: Exceeded hourly quota cap (max {max_clips_per_hour}/hr, ranked #{accepted_pool.index(c) + 1})"
-        rejected_pool.append(c)
+        score = float(c.get("score", 0.0))
+        # If moment is a great clip (score >= buffer_score_threshold) and buffer slots remain, rescue it!
+        if score >= buffer_score_threshold and used_buffer_slots < max_buffer_slots:
+            c["status"] = "accepted"
+            c["decision_reason"] = f"Accepted via Great-Moment Buffer (score {score:.1f} >= {buffer_score_threshold:.1f}, slot #{used_buffer_slots + 1}/3)"
+            final_accepted.append(c)
+            used_buffer_slots += 1
+        else:
+            c["status"] = "rejected"
+            if score < buffer_score_threshold:
+                c["decision_reason"] = f"Rejected: Exceeded hourly quota cap (score {score:.1f} < {buffer_score_threshold:.1f} buffer threshold, ranked #{accepted_pool.index(c) + 1})"
+            else:
+                c["decision_reason"] = f"Rejected: Exceeded hourly quota cap + buffer (max {max_clips_per_hour}+3/hr full, ranked #{accepted_pool.index(c) + 1})"
+            rejected_pool.append(c)
 
     final_list = final_accepted + rejected_pool
     # Sort chronologically for clean output
     final_list.sort(key=lambda c: c["start"])
 
-    logger.info(f"New engine final decision: {len(final_accepted)} accepted, {len(rejected_pool)} rejected (hourly cap={max_clips_per_hour}).")
+    logger.info(f"New engine final decision: {len(final_accepted)} accepted ({used_buffer_slots} via great-moment buffer), {len(rejected_pool)} rejected (hourly cap={max_clips_per_hour}+3).")
     return final_list
