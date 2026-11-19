@@ -196,6 +196,41 @@ def call_ollama_generate(
     return None
 
 
+def load_creator_few_shot_feedback() -> str:
+    """Load creator ratings from data/ai_feedback.json to train Qwen on the user's taste."""
+    feedback_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "ai_feedback.json")
+    if not os.path.isfile(feedback_file):
+        return ""
+    try:
+        with open(feedback_file, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        if not data:
+            return ""
+        high_rated = [d for d in data if d.get("rating", 0) >= 4][:3]
+        low_rated = [d for d in data if 1 <= d.get("rating", 0) <= 2][:3]
+        if not high_rated and not low_rated:
+            return ""
+        lines = ["\nLEARNED CREATOR PREFERENCES (Rated by the creator):"]
+        if high_rated:
+            lines.append("Approved by Creator (High Virality, 4-5 stars):")
+            for d in high_rated:
+                t = d.get("hook_title") or d.get("filename")
+                tag = f" [{d.get('tag')}]" if d.get('tag') else ""
+                q = f' (Speech: "{d.get("transcript")[:75]}...")' if d.get("transcript") else ""
+                lines.append(f'  - "{t}"{tag}{q}: High quality, strong standalone payoff.')
+        if low_rated:
+            lines.append("Disliked / Rejected by Creator (Poor / Hollow, 1-2 stars):")
+            for d in low_rated:
+                t = d.get("hook_title") or d.get("filename")
+                tag = f" [{d.get('tag')}]" if d.get('tag') else ""
+                q = f' (Speech: "{d.get("transcript")[:75]}...")' if d.get("transcript") else ""
+                lines.append(f'  - "{t}"{tag}{q}: Hollow, lacks punchline, or cut awkwardly.')
+        lines.append("Align your score and feedback strictly with the creator's demonstrated taste.\n")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def build_judge_prompt(
     start_sec: float,
     end_sec: float,
@@ -206,6 +241,7 @@ def build_judge_prompt(
     """Build concise evaluation prompt for local LLM judge."""
     chat_str = "\n".join(f"- {m}" for m in chat_sample[:8]) if chat_sample else "No chat comments recorded."
     breakdown_str = json.dumps(signal_breakdown)
+    creator_feedback = load_creator_few_shot_feedback()
 
     return f"""You are a professional viral short-form video editor judging stream clip candidates.
 Evaluate this potential vertical short moment ({end_sec - start_sec:.1f}s duration).
@@ -215,7 +251,7 @@ RULES FOR JUDGING:
 2. Does the clip make sense standalone with ZERO prior stream context?
 3. Does the punchline, reaction, clutch, or payoff happen INSIDE this clip window?
 4. Output a hook title (<= 7 words) that captures attention without fake clickbait or spoilers.
-
+{creator_feedback}
 INPUT DATA:
 - Spoken Transcript:
 "{transcript.strip() if transcript.strip() else '[No speech / gameplay sounds only]'}"

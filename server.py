@@ -566,6 +566,88 @@ def live_delete_clip(filename: str):
     return {"ok": True, "deleted": deleted}
 
 
+class ClipFeedbackIn(BaseModel):
+    filename: str
+    rating: int  # 1 to 5
+    tag: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@app.post("/api/clips/feedback")
+def clip_feedback(body: ClipFeedbackIn):
+    """Save user rating and feedback tag for a clip to train the local AI judge."""
+    clean_fn = os.path.basename(body.filename)
+    base = os.path.splitext(clean_fn)[0]
+    updated_meta = None
+
+    # Search across clips/live/ and clips/job_*/
+    matched_files = glob.glob(os.path.join(ROOT, "clips", "**", f"*{base}*metadata.json"), recursive=True)
+    if not matched_files:
+        matched_files = glob.glob(os.path.join(ROOT, "clips", "**", f"{base}.json"), recursive=True)
+
+    for f in matched_files:
+        try:
+            with open(f, "r", encoding="utf-8") as fp:
+                meta = json.load(fp)
+            if body.rating > 0:
+                meta["user_rating"] = body.rating
+            if body.tag is not None:
+                meta["user_tag"] = body.tag
+            if body.notes:
+                meta["user_notes"] = body.notes
+            with open(f, "w", encoding="utf-8") as fp:
+                json.dump(meta, fp, indent=2)
+            updated_meta = meta
+            break
+        except Exception:
+            pass
+
+    feedback_file = os.path.join(ROOT, "data", "ai_feedback.json")
+    os.makedirs(os.path.dirname(feedback_file), exist_ok=True)
+    feedback_data = []
+    if os.path.isfile(feedback_file):
+        try:
+            with open(feedback_file, "r", encoding="utf-8") as fp:
+                feedback_data = json.load(fp)
+        except Exception:
+            feedback_data = []
+
+    prev_entry = next((e for e in feedback_data if os.path.basename(e.get("filename", "")) == clean_fn), {})
+    final_rating = body.rating if body.rating > 0 else ((updated_meta or {}).get("user_rating") or prev_entry.get("rating", 0))
+    final_tag = body.tag if body.tag is not None else ((updated_meta or {}).get("user_tag") or prev_entry.get("tag", ""))
+
+    entry = {
+        "filename": clean_fn,
+        "rating": final_rating,
+        "tag": final_tag,
+        "notes": body.notes or prev_entry.get("notes", ""),
+        "hook_title": (updated_meta or {}).get("hook_title", prev_entry.get("hook_title", "")),
+        "transcript": (updated_meta or {}).get("transcript", prev_entry.get("transcript", "")),
+        "duration": (updated_meta or {}).get("duration", prev_entry.get("duration", 0)),
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    feedback_data = [e for e in feedback_data if os.path.basename(e.get("filename", "")) != clean_fn]
+    feedback_data.insert(0, entry)
+
+    with open(feedback_file, "w", encoding="utf-8") as fp:
+        json.dump(feedback_data[:300], fp, indent=2)
+
+    return {"ok": True, "filename": clean_fn, "rating": final_rating, "tag": final_tag, "total_feedback_samples": len(feedback_data)}
+
+
+@app.get("/api/clips/feedback")
+def get_feedback_dataset():
+    """Retrieve the training dataset of user ratings."""
+    feedback_file = os.path.join(ROOT, "data", "ai_feedback.json")
+    if not os.path.isfile(feedback_file):
+        return []
+    try:
+        with open(feedback_file, "r", encoding="utf-8") as fp:
+            return json.load(fp)
+    except Exception:
+        return []
+
+
 # ----------------------------------------------------------------- publish (accounts + plan)
 class SocialAccountIn(BaseModel):
     id: Optional[str] = None

@@ -132,6 +132,14 @@ textarea{resize:vertical;min-height:120px;font-family:var(--mono);font-size:13px
 .clip .acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .btn.keep.on{background:var(--ok);border-color:var(--ok);color:#000}
 .btn.rej.on{background:var(--bad);border-color:var(--bad);color:#000}
+.rating-box{margin-top:2px;padding:8px 10px;background:var(--s2);border-radius:8px;border:1px solid var(--line2);display:flex;flex-direction:column;gap:6px}
+.star-rating{display:inline-flex;align-items:center;gap:3px}
+.star-btn{cursor:pointer;font-size:17px;color:#55556a;transition:color .12s,transform .12s;user-select:none;line-height:1}
+.star-btn:hover,.star-btn.active{color:#ffb23a;text-shadow:0 0 8px #ffb23a55}
+.star-btn:hover{transform:scale(1.25)}
+.fchip{cursor:pointer;font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;border:1px solid var(--line2);background:var(--bg);color:var(--mu);transition:.12s}
+.fchip:hover{color:var(--tx);border-color:#55556a}
+.fchip.on{background:#d7ff3a22;border-color:var(--ac);color:var(--ac)}
 .capbox{background:var(--bg);border:1px solid var(--line);border-radius:var(--r2);padding:10px;font-size:12px;white-space:pre-wrap;max-height:110px;overflow:auto;color:#cfcfda}
 .kbd{font-family:var(--mono);font-size:11px;padding:1px 6px;border:1px solid var(--line2);border-bottom-width:2px;border-radius:5px;color:var(--mu)}
 

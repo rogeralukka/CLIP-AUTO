@@ -367,6 +367,30 @@ function drawClips(job) {
         <div class="row" style="justify-content:space-between"><div class="seg" data-lay>${[["split", "Split"], ["gameplay", "Framed"], ["irl", "Follow"], ["face", "Face"]].map(([v, l]) => `<button data-v="${v}" class="${lay === v ? "on" : ""}">${l}</button>`).join("")}</div>
           <button class="btn sm" data-rr ${c.busy ? "disabled" : ""}>Re-render</button></div>
         <div class="acts"><button class="btn keep ${c.status === "KEPT" ? "on" : ""}" data-st="KEPT">✓ Keep</button><button class="btn rej ${c.status === "REJECTED" ? "on" : ""}" data-st="REJECTED">✕ Reject</button></div>
+
+        <!-- AI Training Rating Bar -->
+        <div class="rating-box" style="margin: 8px 0;">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <span class="small" style="font-weight:600;font-size:11px;color:var(--tx)">Train AI Judge:</span>
+            <div class="star-rating" data-fn="${esc(c.path ? c.path.split(/[\\/]/).pop() : (c.filename || 'clip_' + i))}">
+              ${[1, 2, 3, 4, 5].map(star => `
+                <span class="star-btn ${(c.user_rating || 0) >= star ? 'active' : ''}" data-star="${star}" title="Rate ${star}/5 stars">★</span>
+              `).join('')}
+              <span class="rating-val small mono" style="margin-left:4px;color:var(--ac);font-weight:bold">${c.user_rating ? c.user_rating + '/5' : 'Rate'}</span>
+            </div>
+          </div>
+          <div class="row" style="gap:4px;flex-wrap:wrap">
+            ${[
+              ["viral", "🔥 Viral Payoff"],
+              ["reaction", "🎙️ Good Reaction"],
+              ["cut_early", "✂️ Cut Early"],
+              ["hollow", "🕳️ Hollow"]
+            ].map(([tag, label]) => `
+              <button class="fchip ${(c.user_tag === tag) ? 'on' : ''}" data-tag="${tag}" data-fn="${esc(c.path ? c.path.split(/[\\/]/).pop() : (c.filename || 'clip_' + i))}">${label}</button>
+            `).join('')}
+          </div>
+        </div>
+
         ${c.assigned_account ? `<div class="row small" style="background:var(--s2);padding:6px 10px;border-radius:6px"><span style="color:var(--ac);font-weight:600">✓ In the Publish plan: ${esc(c.assigned_account)}</span></div>` : `<button class="btn sm" data-pub>📅 Add to Publish plan</button>`}
         <div class="col"><div class="tabs" data-tabs>${[["youtube", "Shorts"], ["tiktok", "TikTok"], ["reels", "Reels"], ["x", "X"]].map(([k, l], t) => `<button class="btn sm ${t ? "ghost" : ""}" data-tab="${k}">${l}</button>`).join("")}</div>
           <div class="capbox" data-cap>${esc(capText(p, "youtube"))}</div>
@@ -388,6 +412,39 @@ function drawClips(job) {
     };
     $$("[data-tab]", el).forEach(b => b.onclick = () => { tab = b.dataset.tab; $$("[data-tab]", el).forEach(x => x.classList.toggle("ghost", x !== b)); $("[data-cap]", el).textContent = capText(c.platforms || {}, tab); });
     $("[data-copy]", el).onclick = async () => { await navigator.clipboard.writeText($("[data-cap]", el).textContent); toast("Caption copied"); };
+    $$(".star-btn", el).forEach(btn => btn.onclick = async () => {
+      const parent = btn.closest(".star-rating");
+      const fn = parent.dataset.fn;
+      const star = parseInt(btn.dataset.star, 10);
+      $$(".star-btn", parent).forEach(s => {
+        const sVal = parseInt(s.dataset.star, 10);
+        s.classList.toggle("active", sVal <= star);
+      });
+      const valEl = $(".rating-val", parent);
+      if (valEl) valEl.textContent = star + "/5";
+      try {
+        await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: star } });
+        c.user_rating = star;
+        toast(`Rated ${star}/5 ⭐ · AI judge trained with feedback!`);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+    $$(".fchip", el).forEach(btn => btn.onclick = async () => {
+      const fn = btn.dataset.fn;
+      const tag = btn.dataset.tag;
+      const isAlreadyOn = btn.classList.contains("on");
+      $$(`.fchip[data-fn="${fn}"]`, el).forEach(ch => ch.classList.remove("on"));
+      if (!isAlreadyOn) btn.classList.add("on");
+      const newTag = isAlreadyOn ? "" : tag;
+      try {
+        await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: 0, tag: newTag } });
+        c.user_tag = newTag;
+        if (newTag) toast(`Tagged "${btn.textContent.trim()}" · AI feedback recorded!`);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
     el.onmousedown = e => { if (!e.target.closest("button,input,video")) { S.focus = +el.dataset.n; $$(".clip").forEach(x => x.classList.toggle("focus", x === el)); } };
   });
   S.keys = e => {
@@ -822,6 +879,30 @@ async function renderLive(full = true) {
       <div class="body">
         <b>${esc(c.hook_title || "")}</b>
         <span class="muted small mono">${esc(c.timestamp || "")} · ${Math.round(c.duration || 0)}s · ${esc(c.layout || "")} · score ${(c.hype_score || 0).toFixed(1)}</span>
+
+        <!-- AI Training Rating Bar -->
+        <div class="rating-box">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <span class="small" style="font-weight:600;font-size:11px;color:var(--tx)">Train AI Judge:</span>
+            <div class="star-rating" data-fn="${esc(c.filename)}">
+              ${[1, 2, 3, 4, 5].map(star => `
+                <span class="star-btn ${(c.user_rating || 0) >= star ? 'active' : ''}" data-star="${star}" title="Rate ${star}/5 stars">★</span>
+              `).join('')}
+              <span class="rating-val small mono" style="margin-left:4px;color:var(--ac);font-weight:bold">${c.user_rating ? c.user_rating + '/5' : 'Rate'}</span>
+            </div>
+          </div>
+          <div class="row" style="gap:4px;flex-wrap:wrap">
+            ${[
+              ["viral", "🔥 Viral Payoff"],
+              ["reaction", "🎙️ Good Reaction"],
+              ["cut_early", "✂️ Cut Early"],
+              ["hollow", "🕳️ Hollow"]
+            ].map(([tag, label]) => `
+              <button class="fchip ${(c.user_tag === tag) ? 'on' : ''}" data-tag="${tag}" data-fn="${esc(c.filename)}">${label}</button>
+            `).join('')}
+          </div>
+        </div>
+
         <div class="capbox">${esc(capText(c.platforms || {}, "tiktok"))}</div>
         <div class="row" style="margin-top:8px;justify-content:space-between;align-items:center">
           <a class="btn sm" href="${media(c.path)}" download>Download 💾</a>
@@ -861,6 +942,37 @@ async function renderLive(full = true) {
       if (!confirm("Delete this live clip?")) return;
       await api("/api/live/clips/" + b.dataset.delclip, { method: "DELETE" });
       renderLive(true);
+    });
+    $$(".star-btn").forEach(btn => btn.onclick = async () => {
+      const parent = btn.closest(".star-rating");
+      const fn = parent.dataset.fn;
+      const star = parseInt(btn.dataset.star, 10);
+      $$(".star-btn", parent).forEach(s => {
+        const sVal = parseInt(s.dataset.star, 10);
+        s.classList.toggle("active", sVal <= star);
+      });
+      const valEl = $(".rating-val", parent);
+      if (valEl) valEl.textContent = star + "/5";
+      try {
+        await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: star } });
+        toast(`Rated ${star}/5 ⭐ · AI judge trained with feedback!`);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+    $$(".fchip").forEach(btn => btn.onclick = async () => {
+      const fn = btn.dataset.fn;
+      const tag = btn.dataset.tag;
+      const isAlreadyOn = btn.classList.contains("on");
+      $$(`.fchip[data-fn="${fn}"]`).forEach(c => c.classList.remove("on"));
+      if (!isAlreadyOn) btn.classList.add("on");
+      const newTag = isAlreadyOn ? "" : tag;
+      try {
+        await api("/api/clips/feedback", { method: "POST", body: { filename: fn, rating: 0, tag: newTag } });
+        if (newTag) toast(`Tagged "${btn.textContent.trim()}" · AI feedback recorded!`);
+      } catch (e) {
+        toast(e.message, true);
+      }
     });
   };
 
