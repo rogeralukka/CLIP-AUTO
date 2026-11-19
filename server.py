@@ -538,7 +538,7 @@ def live_status():
             meta_files = glob.glob(os.path.join(ROOT, "clips", "live", "*", "*_metadata.json"))
             meta_files.sort(key=_get_clip_creation_time, reverse=True)
             loaded_clips = []
-            for meta in meta_files[:60]:
+            for meta in meta_files:
                 try:
                     with open(meta, "r", encoding="utf-8") as f:
                         c_data = json.load(f)
