@@ -516,13 +516,20 @@ class LiveStreamClipper:
             self._set_state("analyzing", f"Hunting story narrative & action pool ({int(start_offset)}s -> {int(end_offset)}s)...")
             try:
                 from .story import hunt_story_candidates_and_pool
+                hourly_cap = int(signals_cfg.get("max_clips_per_hour", 10))
+                # True rolling 1-hour window budget: count clips made for this stream in the last 3600s
+                one_hour_ago = max(0.0, end_offset - 3600.0)
+                clips_in_last_hour = sum(1 for c in self.clips_done if float(c.get("start_seconds", 0)) >= one_hour_ago)
+                remaining_hourly_quota = max(0, hourly_cap - clips_in_last_hour)
+
                 pooled = hunt_story_candidates_and_pool(
                     slice_wav=tail_wav,
                     slice_duration=chunk_len,
                     source_video=self.buffer_file,
                     slice_offset_sec=start_offset,
                     sensitivity=self.sensitivity,
-                    max_clips_per_hour=int(signals_cfg.get("max_clips_per_hour", 4)),
+                    max_clips_per_hour=hourly_cap,
+                    remaining_quota=remaining_hourly_quota,
                     comments=comments,
                     endpoint=llm_cfg.get("endpoint", "http://localhost:11434"),
                     model_name=llm_cfg.get("model", "qwen3:14b"),

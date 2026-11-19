@@ -62,6 +62,46 @@ class TestStoryHunter(unittest.TestCase):
         self.assertEqual(len(per_sec), 0)
         self.assertEqual(len(z_scores), 0)
 
+    def test_hourly_quota_budget_ten_per_streamer(self):
+        """Verify that a 10-minute slice does not artificially choke candidates when max_clips_per_hour=10."""
+        from clipper.story import hunt_story_candidates_and_pool
+
+        # Mock dependencies of hunt_story_candidates_and_pool
+        with patch("clipper.story.transcribe_full_audio") as mock_trans, \
+             patch("clipper.story.is_ollama_available", return_value=(True, ["qwen3:14b"])), \
+             patch("clipper.story.hunt_story_candidates_in_window") as mock_hunt, \
+             patch("clipper.story.extract_action_candidates", return_value=[]):
+
+            words = [{"word": f"word{i}", "start": float(i), "end": float(i) + 0.5} for i in range(25)]
+            mock_trans.return_value = {"words": words}
+            mock_hunt.return_value = [
+                {"start": 10.0, "end": 40.0, "score": 8.5, "payoff_inside": True, "sub_scores": {"standalone": 8.0}},
+                {"start": 120.0, "end": 150.0, "score": 7.5, "payoff_inside": True, "sub_scores": {"standalone": 7.0}},
+                {"start": 300.0, "end": 330.0, "score": 6.5, "payoff_inside": True, "sub_scores": {"standalone": 6.0}},
+            ]
+
+            # 1. With max_clips_per_hour = 10, all 3 moments in this 10-minute (600s) slice must be accepted!
+            res = hunt_story_candidates_and_pool(
+                slice_wav="dummy.wav",
+                slice_duration=600.0,
+                max_clips_per_hour=10,
+            )
+            accepted = [c for c in res if c.get("status") == "accepted"]
+            self.assertEqual(len(accepted), 3, "All 3 moments should be accepted when under 10/hr cap")
+
+            # 2. When remaining_quota is explicitly set to 1 (e.g. streamer already had 9 clips this hour):
+            res_capped = hunt_story_candidates_and_pool(
+                slice_wav="dummy.wav",
+                slice_duration=600.0,
+                max_clips_per_hour=10,
+                remaining_quota=1,
+            )
+            accepted_capped = [c for c in res_capped if c.get("status") == "accepted"]
+            rejected_capped = [c for c in res_capped if c.get("status") == "rejected"]
+            self.assertEqual(len(accepted_capped), 1)
+            self.assertEqual(len(rejected_capped), 2)
+            self.assertTrue("Exceeded hourly quota cap" in rejected_capped[0]["decision_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

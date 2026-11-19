@@ -561,12 +561,13 @@ def hunt_story_candidates_and_pool(
     source_video: Optional[str] = None,
     slice_offset_sec: float = 0.0,
     sensitivity: float = 2.0,
-    max_clips_per_hour: int = 4,
+    max_clips_per_hour: int = 10,
     comments: Optional[List[Dict[str, Any]]] = None,
     endpoint: str = "http://localhost:11434",
     model_name: str = "qwen3:14b",
     window_length_sec: float = 240.0,
     window_overlap_sec: float = 30.0,
+    remaining_quota: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Complete Step 2 Pipeline: Story Hunter + Action Pool + Unified 4-Pillar Ranking."""
     logger.info(f"Starting Story Hunter + Action Pool pipeline on slice ({slice_duration:.1f}s)...")
@@ -666,10 +667,15 @@ def hunt_story_candidates_and_pool(
             c["status"] = "accepted"
             accepted_pool.append(c)
 
-    # 7. Hourly Maximum Cap
-    # Calculate allowed quota for this slice duration
-    slice_hours = slice_duration / 3600.0
-    allowed_quota = max(1, int(math.ceil(slice_hours * max_clips_per_hour)))
+    # 7. Hourly Maximum Cap per Streamer (capped at max_clips_per_hour, default 10/hr)
+    if remaining_quota is not None:
+        allowed_quota = max(0, int(remaining_quota))
+    elif slice_duration <= 3600.0:
+        # For sub-hour windows, allow up to the full hourly quota so bursty viral moments aren't dropped
+        allowed_quota = max(1, max_clips_per_hour)
+    else:
+        slice_hours = slice_duration / 3600.0
+        allowed_quota = max(1, int(math.ceil(slice_hours * max_clips_per_hour)))
 
     # Sort accepted pool descending by composite virality score
     accepted_pool.sort(key=lambda c: float(c.get("score", 0.0)), reverse=True)

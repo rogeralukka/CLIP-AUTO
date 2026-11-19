@@ -298,7 +298,7 @@ def run_new_engine(
     source_video: Optional[str] = None,
     slice_offset_sec: float = 0.0,
     sensitivity: float = 2.0,
-    max_clips_per_hour: int = 4,
+    max_clips_per_hour: int = 10,
     endpoint: str = "http://localhost:11434",
     model_name: str = "qwen3:14b",
 ) -> List[Dict[str, Any]]:
@@ -372,7 +372,7 @@ def replay_slice(
     compare: bool = False,
     output_dir: str = "downloads/replay",
     sensitivity: float = 2.0,
-    max_clips_per_hour: int = 4,
+    max_clips_per_hour: int = 10,
     endpoint: str = "http://localhost:11434",
     model_name: str = "qwen3:14b",
 ) -> Dict[str, Any]:
@@ -478,7 +478,7 @@ def main():
     parser.add_argument("--compare", action="store_true", help="Run both old and new engines side-by-side")
     parser.add_argument("--output-dir", default="downloads/replay", help="Directory for output slices and reports")
     parser.add_argument("--sensitivity", type=float, default=2.0, help="Sensitivity threshold (default: 2.0)")
-    parser.add_argument("--max-clips-per-hour", type=int, default=4, help="Max clips per hour cap (default: 4)")
+    parser.add_argument("--max-clips-per-hour", type=int, default=10, help="Max clips per hour cap (default: 10)")
     parser.add_argument("--endpoint", default="http://localhost:11434", help="Ollama endpoint")
     parser.add_argument("--model", default="qwen3:14b", help="Ollama model name (default: qwen3:14b)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")

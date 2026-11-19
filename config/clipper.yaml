@@ -9,7 +9,7 @@ audio:
 
 signals:
   use_story_hunter: true         # AutoClip/OpenShorts transcript-first sliding windows & 4-pillar ranking
-  max_clips_per_hour: 4          # Per-hour maximum quota cap; boring hours cut 0 clips
+  max_clips_per_hour: 10         # Per-hour maximum quota cap per streamer (max 10 clips/hr)
   default_max_clip_length: 180.0 # Maximum clip length in seconds (up to 3 minutes for Shorts/TikTok)
   rolling_window_seconds: 600    # 10 minutes baseline window for robust z-score
   merge_gap_seconds: 15          # Merge nearby peak moments within this gap
