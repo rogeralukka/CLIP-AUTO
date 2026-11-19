@@ -186,6 +186,7 @@ class LiveStreamClipper:
         self._offline_since: Optional[float] = None
         self._last_reconnect_attempt: float = 0.0
         self._capture_out_file: Optional[Any] = None
+        self._capture_stderr_file: Optional[Any] = None
 
     def _set_state(self, status: str, activity: str) -> None:
         with self._telemetry_lock:
@@ -259,6 +260,13 @@ class LiveStreamClipper:
             except Exception:
                 pass
             self._capture_out_file = None
+        if self._capture_stderr_file:
+            try:
+                self._capture_stderr_file.flush()
+                self._capture_stderr_file.close()
+            except Exception:
+                pass
+            self._capture_stderr_file = None
 
     def resume(self):
         """Resume capture and analysis from live edge in append mode."""
@@ -333,6 +341,16 @@ class LiveStreamClipper:
                 logger.info(f"Starting initial live stream capture with yt-dlp: {' '.join(cmd)}")
 
         try:
+            stderr_log_path = os.path.join(self.buffer_dir, "capture_stderr.log")
+            if self._capture_stderr_file and not self._capture_stderr_file.closed:
+                try:
+                    self._capture_stderr_file.close()
+                except Exception:
+                    pass
+            self._capture_stderr_file = open(stderr_log_path, "a", encoding="utf-8", errors="replace")
+            self._capture_stderr_file.write(f"\n--- Capture process started at {datetime.datetime.now().isoformat()} (append={is_appending}) ---\n")
+            self._capture_stderr_file.flush()
+
             if is_appending:
                 if self._capture_out_file and not self._capture_out_file.closed:
                     try:
@@ -343,13 +361,13 @@ class LiveStreamClipper:
                 self._capture_proc = subprocess.Popen(
                     cmd,
                     stdout=self._capture_out_file,
-                    stderr=subprocess.DEVNULL,
+                    stderr=self._capture_stderr_file,
                 )
             else:
                 self._capture_proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=self._capture_stderr_file,
                 )
             self._t0 = time.time()
             self._offline_since = None
@@ -377,8 +395,11 @@ class LiveStreamClipper:
 
         curr_duration = get_media_duration_seconds(self.buffer_file)
         self.buffer_seconds = curr_duration
-        if self.last_analyzed_time > curr_duration:
-            self.last_analyzed_time = 0.0
+        if curr_duration < self.last_analyzed_time - 30.0:
+            # Significant duration truncation detected: back up slightly instead of zeroing out
+            self.last_analyzed_time = max(0.0, curr_duration - self.analysis_window_seconds)
+        elif self.last_analyzed_time > curr_duration:
+            self.last_analyzed_time = curr_duration
         try:
             self.buffer_mb = round(os.path.getsize(self.buffer_file) / (1024 * 1024), 1)
         except OSError:
@@ -424,17 +445,48 @@ class LiveStreamClipper:
         logger.info(f"Analyzing live buffer from {start_offset:.0f}s to {end_offset:.0f}s ({curr_duration:.0f}s total on disk, "
                     f"{len(comments or [])} chat msgs)...")
 
-        found = find_moments(
-            comments=comments,
-            video_path=tail_wav,
-            z_thresh=self.sensitivity,
-            vod_id=None,
-            before=30,
-            after=50,
-            window=5,
-            min_clip_length=float((self.campaign or {}).get("min_clip_length") or 30.0),
-            max_clip_length=float((self.campaign or {}).get("max_clip_length") or 180.0),
-        )
+        cfg = load_config()
+        signals_cfg = cfg.get("signals", {})
+        llm_cfg = cfg.get("llm", {})
+        use_story = signals_cfg.get("use_story_hunter", True) and llm_cfg.get("enabled", True)
+
+        found = []
+        if use_story:
+            self._set_state("analyzing", f"Hunting story narrative & action pool ({int(start_offset)}s -> {int(end_offset)}s)...")
+            try:
+                from .story import hunt_story_candidates_and_pool
+                pooled = hunt_story_candidates_and_pool(
+                    slice_wav=tail_wav,
+                    slice_duration=chunk_len,
+                    source_video=self.buffer_file,
+                    slice_offset_sec=start_offset,
+                    sensitivity=self.sensitivity,
+                    max_clips_per_hour=int(signals_cfg.get("max_clips_per_hour", 4)),
+                    comments=comments,
+                    endpoint=llm_cfg.get("endpoint", "http://localhost:11434"),
+                    model_name=llm_cfg.get("model", "qwen3:14b"),
+                )
+                for cand in pooled:
+                    if cand.get("status") == "accepted":
+                        found.append(cand)
+                    else:
+                        self._record_event("judge_reject", f"Candidate rejected ({cand.get('decision_reason', '')})", score=cand.get("score"), reason=cand.get("decision_reason"))
+            except Exception as e:
+                logger.warning(f"Story hunter execution failed, falling back to hype spikes: {e}")
+                found = []
+
+        if not found and not use_story:
+            found = find_moments(
+                comments=comments,
+                video_path=tail_wav,
+                z_thresh=self.sensitivity,
+                vod_id=None,
+                before=30,
+                after=50,
+                window=5,
+                min_clip_length=float((self.campaign or {}).get("min_clip_length") or 30.0),
+                max_clip_length=float((self.campaign or {}).get("max_clip_length") or 180.0),
+            )
 
         # Back to buffer time; skip moments still unfolding at the very live edge
         from .signals import dedupe_moments
@@ -483,55 +535,78 @@ class LiveStreamClipper:
                 words = transcribe_clip(rough_path, use_cpu=self.use_cpu, cache_dir=self.output_dir)
                 transcript_text = " ".join(w[2] for w in words).strip()
 
-                # AI Viral Judge Evaluation (Ollama Qwen):
-                # Only render if LLM confirms this clip has a standalone story & payoff
-                hook_title = None
-                cfg = load_config()
-                llm_cfg = cfg.get("llm", {})
-                if llm_cfg.get("enabled", True):
-                    try:
-                        from .judge import is_ollama_available, judge_single_moment
-                        from .transcription import unload_whisper_model
-                        endpoint = llm_cfg.get("endpoint", "http://localhost:11434")
-                        model_name = llm_cfg.get("model", "qwen3:14b")
-                        avail, _ = is_ollama_available(endpoint)
-                        if avail:
-                            self._set_state("judging", f"AI Judge evaluating virality at {int(start_s)}s (Qwen 14B)...")
-                            unload_whisper_model()
-                            chat_sample = []
-                            if self.chat is not None:
-                                chat_sample = [c.get("message", "") for c in self.chat.comments_between(start_s, end_s)]
-                            eval_res = judge_single_moment(
-                                moment=m,
-                                transcript=transcript_text,
-                                chat_sample=chat_sample,
-                                endpoint=endpoint,
-                                model=model_name,
-                            )
-                            if eval_res:
-                                score = float(eval_res.get("score", 5.0))
-                                standalone = eval_res.get("standalone", True)
-                                payoff = eval_res.get("payoff_inside", True)
-                                # Balanced viral filter: reject true hollow moments (< 4.5) or
-                                # moments below 5.5 that lack an internal payoff/punchline.
-                                if score < 4.5 or (score < 5.5 and not payoff):
-                                    reason = eval_res.get('reason') or "Lacks clear punchline or standalone context"
-                                    logger.info(f"AI Judge rejected hollow moment at t={start_s:.1f}s (score={score:.1f}/10, standalone={standalone}, payoff={payoff}, reason: {reason})")
-                                    self._record_event("judge_reject", f"AI Judge rejected moment at {int(start_s)}s (Score {score:.1f}/10)", score=score, reason=reason)
-                                    self._set_state("idle", f"Rejected hollow moment at {int(start_s)}s (Score {score:.1f}/10). Resuming monitoring...")
-                                    try:
-                                        if os.path.isfile(rough_path):
-                                            os.remove(rough_path)
-                                    except OSError:
-                                        pass
-                                    continue
-                                if eval_res.get("hook_title"):
-                                    hook_title = eval_res["hook_title"]
-                                m["score"] = score
-                                self._record_event("judge_approve", f"AI Judge approved viral moment at {int(start_s)}s (Score {score:.1f}/10: '{hook_title}')", score=score)
-                                logger.info(f"AI Judge approved viral moment at t={start_s:.1f}s (score={score:.1f}/10, hook='{hook_title}')")
-                    except Exception as e:
-                        logger.warning(f"Live LLM Judge evaluation failed, falling back: {e}")
+                # Dead-air trimming: shrink gaps > 0.4s down to 0.15s and retime captions
+                silence_cfg = cfg.get("polish", {}).get("silence", {})
+                if silence_cfg.get("remove_internal_dead_air", True) and len(words) > 1:
+                    from .cutter import compress_internal_dead_air
+                    min_g = float(silence_cfg.get("dead_air_min_gap_seconds", 0.40))
+                    tgt_g = float(silence_cfg.get("dead_air_target_gap_seconds", 0.15))
+                    tight_rough = os.path.join(self.output_dir, f"rough_tight_{clip_base}.mp4")
+                    words, tight_path = compress_internal_dead_air(
+                        words=words,
+                        rough_path=rough_path,
+                        output_path=tight_rough,
+                        min_gap_sec=min_g,
+                        target_gap_sec=tgt_g,
+                        use_cpu=self.use_cpu,
+                    )
+                    if tight_path != rough_path and os.path.isfile(tight_path):
+                        rough_path = tight_path
+                        dur = get_media_duration_seconds(rough_path)
+
+                hook_title = m.get("hook_title")
+                score = float(m.get("score", 5.0))
+
+                # If candidate was already validated by Story Hunter 4-pillar judge:
+                if m.get("sub_scores") is not None:
+                    self._record_event("judge_approve", f"AI Story Hunter approved moment at {int(start_s)}s (Score {score:.1f}/10: '{hook_title}')", score=score)
+                    logger.info(f"AI Story Hunter approved moment at t={start_s:.1f}s (score={score:.1f}/10, hook='{hook_title}')")
+                else:
+                    # Fallback evaluation for legacy find_moments peaks
+                    cfg = load_config()
+                    llm_cfg = cfg.get("llm", {})
+                    if llm_cfg.get("enabled", True):
+                        try:
+                            from .judge import is_ollama_available, judge_single_moment
+                            from .transcription import unload_whisper_model
+                            endpoint = llm_cfg.get("endpoint", "http://localhost:11434")
+                            model_name = llm_cfg.get("model", "qwen3:14b")
+                            avail, _ = is_ollama_available(endpoint)
+                            if avail:
+                                self._set_state("judging", f"AI Judge evaluating virality at {int(start_s)}s (Qwen 14B)...")
+                                unload_whisper_model()
+                                chat_sample = []
+                                if self.chat is not None:
+                                    chat_sample = [c.get("message", "") for c in self.chat.comments_between(start_s, end_s)]
+                                eval_res = judge_single_moment(
+                                    moment=m,
+                                    transcript=transcript_text,
+                                    chat_sample=chat_sample,
+                                    endpoint=endpoint,
+                                    model=model_name,
+                                )
+                                if eval_res:
+                                    score = float(eval_res.get("score", 5.0))
+                                    standalone = eval_res.get("standalone", True)
+                                    payoff = eval_res.get("payoff_inside", True)
+                                    if score < 4.5 or (score < 5.5 and not payoff):
+                                        reason = eval_res.get('reason') or "Lacks clear punchline or standalone context"
+                                        logger.info(f"AI Judge rejected hollow moment at t={start_s:.1f}s (score={score:.1f}/10, standalone={standalone}, payoff={payoff}, reason: {reason})")
+                                        self._record_event("judge_reject", f"AI Judge rejected moment at {int(start_s)}s (Score {score:.1f}/10)", score=score, reason=reason)
+                                        self._set_state("idle", f"Rejected hollow moment at {int(start_s)}s (Score {score:.1f}/10). Resuming monitoring...")
+                                        try:
+                                            if os.path.isfile(rough_path):
+                                                os.remove(rough_path)
+                                        except OSError:
+                                            pass
+                                        continue
+                                    if eval_res.get("hook_title"):
+                                        hook_title = eval_res["hook_title"]
+                                    m["score"] = score
+                                    self._record_event("judge_approve", f"AI Judge approved viral moment at {int(start_s)}s (Score {score:.1f}/10: '{hook_title}')", score=score)
+                                    logger.info(f"AI Judge approved viral moment at t={start_s:.1f}s (score={score:.1f}/10, hook='{hook_title}')")
+                        except Exception as e:
+                            logger.warning(f"Live LLM Judge evaluation failed, falling back: {e}")
 
                 # Facecam layout: same checks as a normal run (cutout/green-screen cams, two cams,
                 # stream-wide cam memory)
@@ -583,6 +658,7 @@ class LiveStreamClipper:
                     "end_seconds": end_s,
                     "duration": round(dur, 2),
                     "hype_score": m.get("score", 0.0),
+                    "sub_scores": m.get("sub_scores"),
                     "hook_title": hook_title,
                     "layout": layout,
                     "layout_note": layout_note,
@@ -719,8 +795,10 @@ class LiveStreamClipper:
                 if os.path.isfile(self.buffer_file):
                     curr_duration = get_media_duration_seconds(self.buffer_file)
                     self.buffer_seconds = curr_duration
-                    if self.last_analyzed_time > curr_duration:
-                        self.last_analyzed_time = 0.0
+                    if curr_duration < self.last_analyzed_time - 30.0:
+                        self.last_analyzed_time = max(0.0, curr_duration - self.analysis_window_seconds)
+                    elif self.last_analyzed_time > curr_duration:
+                        self.last_analyzed_time = curr_duration
                     try:
                         self.buffer_mb = round(os.path.getsize(self.buffer_file) / (1024 * 1024), 1)
                     except OSError:
@@ -742,6 +820,12 @@ class LiveStreamClipper:
                     self._record_event("info", f"Check error: {e}")
                     logger.warning(f"Error during live clipping check: {e}")
 
+                if iterations % 10 == 0:
+                    try:
+                        self.prune_rolling_buffer()
+                    except Exception as e:
+                        logger.debug(f"Rolling buffer prune check error: {e}")
+
                 if max_iterations is not None and iterations >= max_iterations:
                     logger.info(f"Reached max iterations ({max_iterations}). Stopping.")
                     break
@@ -749,6 +833,78 @@ class LiveStreamClipper:
             logger.info("Live monitor stopped by user.")
         finally:
             self.stop()
+
+    def prune_rolling_buffer(self, max_age_seconds: float = 5400.0) -> bool:
+        """Prune analyzed stream buffer older than ~90 minutes that no clip references.
+
+        Runs only when the buffer duration exceeds max_age_seconds and the analysis
+        edge has safely progressed past it. Uses fast FFmpeg stream copy to retain
+        the most recent 90 minutes and frees up disk space.
+        """
+        if not os.path.isfile(self.buffer_file):
+            return False
+
+        curr_dur = get_media_duration_seconds(self.buffer_file)
+        if curr_dur <= max_age_seconds + 300.0:
+            return False
+
+        if self.last_analyzed_time < max_age_seconds:
+            return False
+
+        trim_sec = curr_dur - max_age_seconds
+        logger.info(f"Pruning rolling buffer: removing oldest {trim_sec:.0f}s of footage (>90m old)...")
+
+        ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
+        temp_trimmed = os.path.join(self.buffer_dir, "trimmed_buffer.ts")
+
+        was_running = self._capture_proc is not None and self._capture_proc.poll() is None
+        if was_running:
+            try:
+                self._capture_proc.terminate()
+                self._capture_proc.wait(timeout=3)
+            except Exception:
+                pass
+            if self._capture_out_file and not self._capture_out_file.closed:
+                try:
+                    self._capture_out_file.flush()
+                    self._capture_out_file.close()
+                except Exception:
+                    pass
+                self._capture_out_file = None
+
+        cmd = [
+            ffmpeg_bin, "-y", "-v", "error",
+            "-ss", f"{trim_sec:.2f}",
+            "-i", self.buffer_file,
+            "-c", "copy",
+            temp_trimmed,
+        ]
+        res = subprocess.run(cmd, capture_output=True)
+        if res.returncode == 0 and os.path.isfile(temp_trimmed) and os.path.getsize(temp_trimmed) > 1024 * 1024:
+            try:
+                os.replace(temp_trimmed, self.buffer_file)
+                self.last_analyzed_time = max(0.0, self.last_analyzed_time - trim_sec)
+                self.buffer_seconds = get_media_duration_seconds(self.buffer_file)
+                logger.info(f"Rolling buffer pruned successfully. New buffer duration: {self.buffer_seconds:.0f}s")
+                self._record_event("info", f"🧹 Rolling buffer pruned: freed oldest {int(trim_sec/60)}m of analyzed footage")
+            except Exception as e:
+                logger.warning(f"Failed to replace pruned buffer: {e}")
+                if os.path.isfile(temp_trimmed):
+                    try:
+                        os.remove(temp_trimmed)
+                    except OSError:
+                        pass
+        else:
+            if os.path.isfile(temp_trimmed):
+                try:
+                    os.remove(temp_trimmed)
+                except OSError:
+                    pass
+
+        if was_running and not self.is_paused:
+            self.start_capture_process(append=True)
+
+        return True
 
     def stop(self):
         """Stop background capture and clean up."""
@@ -771,6 +927,13 @@ class LiveStreamClipper:
             except Exception:
                 pass
             self._capture_out_file = None
+        if self._capture_stderr_file:
+            try:
+                self._capture_stderr_file.flush()
+                self._capture_stderr_file.close()
+            except Exception:
+                pass
+            self._capture_stderr_file = None
 
 
 def run_live_clipping(

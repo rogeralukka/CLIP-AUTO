@@ -360,6 +360,14 @@ function drawClips(job) {
         ${c.busy ? `<div class="busy"><div class="spin"></div>Re-rendering…</div>` : ""}</div>
       <div class="body">
         <div class="row" style="justify-content:space-between"><span class="mono small muted">${fmt(c.start_seconds || 0)} · ${Math.round(c.duration || 0)}s${(c.facecam || {}).stream_type ? " · " + esc({ gaming_facecam: "game + cam", gaming_duo: "game + 2 cams", gaming: "game", irl: "IRL", just_chatting: "chatting" }[c.facecam.stream_type] || c.facecam.stream_type) : ""}</span><span class="chip">${(+(c.hype_score || 0)).toFixed(1)} hype</span></div>
+        ${c.sub_scores ? `
+          <div class="row" style="gap:4px;margin:3px 0 6px;flex-wrap:wrap">
+            <span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.06);color:var(--tx)" title="Opening hook power (0-10)">🪝 Hook ${c.sub_scores.hook ?? "-"}</span>
+            <span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.06);color:var(--tx)" title="Story flow & pacing (0-10)">🌊 Flow ${c.sub_scores.flow ?? "-"}</span>
+            <span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.06);color:var(--tx)" title="Streamer emotion / energy (0-10)">⚡ Emo ${c.sub_scores.emotion ?? "-"}</span>
+            <span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.06);color:var(--tx)" title="Standalone clarity (0-10)">🎯 Solo ${c.sub_scores.standalone ?? "-"}</span>
+          </div>
+        ` : ""}
         ${(qc.flags || []).length ? `<div class="small" style="color:var(--warn)">${(qc.flags || []).map(esc).join("<br>")}</div>` : ""}
         ${c.layout_note ? `<div class="small muted">Layout: ${esc(c.layout_note)}</div>` : ""}
         ${c.error ? `<div class="small" style="color:var(--bad)">${esc(c.error)}</div>` : ""}
@@ -879,6 +887,14 @@ async function renderLive(full = true) {
       <div class="body">
         <b>${esc(c.hook_title || "")}</b>
         <span class="muted small mono">${esc(c.timestamp || "")} · ${Math.round(c.duration || 0)}s · ${esc(c.layout || "")} · score ${(c.hype_score || 0).toFixed(1)}</span>
+        ${c.sub_scores ? `
+          <div class="row" style="gap:4px;margin:3px 0 6px;flex-wrap:wrap">
+            <span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.06);color:var(--tx)">🪝 Hook ${c.sub_scores.hook ?? "-"}</span>
+            <span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.06);color:var(--tx)">🌊 Flow ${c.sub_scores.flow ?? "-"}</span>
+            <span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.06);color:var(--tx)">⚡ Emo ${c.sub_scores.emotion ?? "-"}</span>
+            <span class="chip" style="font-size:10px;padding:2px 6px;background:rgba(255,255,255,0.06);color:var(--tx)">🎯 Solo ${c.sub_scores.standalone ?? "-"}</span>
+          </div>
+        ` : ""}
 
         <!-- AI Training Rating Bar -->
         <div class="rating-box">

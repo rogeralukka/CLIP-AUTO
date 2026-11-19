@@ -150,7 +150,7 @@ def call_ollama_generate(
     prompt: str,
     endpoint: str = "http://localhost:11434",
     model: str = "qwen3:14b",
-    timeout: float = 30.0,
+    timeout: float = 120.0,
 ) -> Optional[str]:
     """Call Ollama /api/generate (JSON output, thinking off, model kept loaded between calls).
 
@@ -158,16 +158,19 @@ def call_ollama_generate(
     rank_moments_with_llm unloads it when it is done (12GB VRAM rule)."""
     gen_url = f"{endpoint.rstrip('/')}/api/generate"
     llm_cfg = load_config().get("llm", {})
+    keep_alive_cfg = llm_cfg.get("keep_alive_seconds", 180)
+    keep_alive = -1 if int(keep_alive_cfg) == -1 else f"{int(keep_alive_cfg)}s"
+
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
         "format": "json",
         "think": False,          # Qwen3 etc. would otherwise spend the answer on "thinking" text
-        "keep_alive": f"{int(llm_cfg.get('keep_alive_seconds', 180))}s",
+        "keep_alive": keep_alive,
         "options": {
             "temperature": 0.2,
-            "num_ctx": int(llm_cfg.get("num_ctx", 8192)),
+            "num_ctx": int(llm_cfg.get("num_ctx", 4096)),
         }
     }
 
@@ -278,7 +281,7 @@ def judge_single_moment(
     chat_sample: List[str],
     endpoint: str = "http://localhost:11434",
     model: str = "qwen3:14b",
-    timeout: float = 30.0,
+    timeout: float = 120.0,
     retry_count: int = 1,
 ) -> Optional[Dict[str, Any]]:
     """Send moment to Ollama judge, validating output and retrying once on bad JSON."""

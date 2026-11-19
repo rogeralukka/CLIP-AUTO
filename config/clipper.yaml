@@ -2,12 +2,14 @@
 # All tunable parameters are defined here with sane defaults.
 
 audio:
-  whisper_model: "large-v3"       # large-v3, large-v3-turbo, distil-large-v3
+  whisper_model: "large-v3-turbo" # large-v3, large-v3-turbo, distil-large-v3
   vad_filter: true
   whisper_batch_size: 16         # GPU batched transcription (much faster). Set 1 to turn off
   section_padding_seconds: 3.0   # Padding around extracted video clips
 
 signals:
+  use_story_hunter: true         # AutoClip/OpenShorts transcript-first sliding windows & 4-pillar ranking
+  max_clips_per_hour: 4          # Per-hour maximum quota cap; boring hours cut 0 clips
   default_max_clip_length: 180.0 # Maximum clip length in seconds (up to 3 minutes for Shorts/TikTok)
   rolling_window_seconds: 600    # 10 minutes baseline window for robust z-score
   merge_gap_seconds: 15          # Merge nearby peak moments within this gap
@@ -32,12 +34,12 @@ llm:
   endpoint: "http://localhost:11434"
   model: "qwen3:14b"             # ~9 GB, fits the 12 GB card fully; best at following the JSON format
   autostart_ollama: true         # Studio starts Ollama in the background when it opens
-  keep_alive_seconds: 180        # keep the model loaded between moments, unloaded when judging ends
-  num_ctx: 8192
+  keep_alive_seconds: -1         # Keep Qwen resident in VRAM permanently alongside Whisper turbo
+  num_ctx: 4096
   candidate_multiplier: 3        # Review top 3x N candidates
   weight_llm: 0.50
   weight_hype: 0.50
-  timeout_seconds: 90            # first call includes loading the model
+  timeout_seconds: 120           # generous timeout for 14B Q4 generation on laptop GPUs
   retry_count: 1
 
 facecam:
@@ -54,6 +56,9 @@ polish:
   progress_bar: true             # Thin bar along the bottom that fills as the clip plays
   progress_bar_color: "yellow"
   hook_duration_seconds: 2.5
+  punch_zoom:
+    enabled: true
+    factor: 1.12                 # Subtle punch-zoom (1.10x - 1.15x) on punchline climax
   enhance: "light"               # light denoise + sharpen on every clip ("off" to disable)
   ai_upscale_cams: "auto"        # AI-sharpen small cam crops with Real-ESRGAN when installed (setup_upscaler.ps1); "off" to disable
   ai_upscale_min_factor: 1.15    # AI-sharpen when the cam is enlarged at least this much
@@ -67,8 +72,9 @@ polish:
     target_lra: 11.0
   silence:
     trim_breath_seconds: 0.3
-    remove_internal_dead_air: false
-    dead_air_gap_seconds: 1.0
+    remove_internal_dead_air: true
+    dead_air_min_gap_seconds: 0.40 # Gaps over 0.4s shrink to 0.15s with retimed captions
+    dead_air_target_gap_seconds: 0.15
 
 qc:
   loudness_tolerance_lu: 2.0

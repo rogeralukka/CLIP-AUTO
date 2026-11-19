@@ -6,12 +6,14 @@ from typing import Any, Dict
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "audio": {
-        "whisper_model": "large-v3",
+        "whisper_model": "large-v3-turbo",
         "whisper_batch_size": 16,
         "vad_filter": True,
         "section_padding_seconds": 3.0,
     },
     "signals": {
+        "use_story_hunter": True,
+        "max_clips_per_hour": 4,
         "rolling_window_seconds": 600,
         "merge_gap_seconds": 15,
         "max_lead_seconds": 5.0,
@@ -56,6 +58,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "progress_bar": True,
         "progress_bar_color": "yellow",
         "hook_duration_seconds": 2.5,
+        "punch_zoom": {
+            "enabled": True,
+            "factor": 1.12,
+        },
         "loudnorm": {
             "enabled": True,
             "target_lufs": -14.0,
@@ -64,8 +70,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
         "silence": {
             "trim_breath_seconds": 0.3,
-            "remove_internal_dead_air": False,
-            "dead_air_gap_seconds": 1.0,
+            "remove_internal_dead_air": True,
+            "dead_air_min_gap_seconds": 0.40,
+            "dead_air_target_gap_seconds": 0.15,
         },
     },
     "qc": {

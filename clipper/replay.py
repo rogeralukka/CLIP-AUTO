@@ -219,8 +219,9 @@ def run_old_engine(
     if not moments:
         return []
 
-    # 2. Transcribe the slice once for word lookup
-    transcript_data = transcribe_full_audio(slice_wav, use_cpu=False)
+    # 2. Transcribe the slice once for word lookup (cached to disk)
+    transcript_cache = slice_wav.replace(".wav", "_transcript.json")
+    transcript_data = transcribe_full_audio(slice_wav, use_cpu=False, output_json=transcript_cache)
     words = transcript_data.get("words", [])
 
     candidates: List[Dict[str, Any]] = []

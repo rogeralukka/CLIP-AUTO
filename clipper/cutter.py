@@ -9,6 +9,7 @@ import numpy as np
 
 from .captions import escape_ffmpeg_ass_path
 from .config import load_config
+from .detection import get_media_duration_seconds
 from .upscale import needs_upscale, upscale_crop_video, upscale_enabled
 from .facecam import (cam_region, cam_tile_geometry, detect_facecam, gameplay_crop_avoiding)
 from .process_manager import check_cancelled_or_paused, run_tracked_command
@@ -152,7 +153,6 @@ def attach_stream_audio(section_path: str, stream_audio: str, section_start: flo
                 return os.path.abspath(output_path), float(json.load(f).get("delta", 0.0))
         except Exception:
             pass
-    from .detection import get_media_duration_seconds
     dur = float(get_media_duration_seconds(section_path) or 0.0)
     if dur <= 0.5 or not (stream_audio and os.path.isfile(stream_audio)):
         return section_path, 0.0
@@ -305,6 +305,145 @@ def caption_anchor_y(layout: str, facecam_info: Optional[Dict[str, Any]]) -> int
     return 1500
 
 
+def build_punch_zoom_filter(
+    clip_duration: float,
+    punch_start_sec: Optional[float] = None,
+    punch_end_sec: Optional[float] = None,
+    zoom_factor: float = 1.12,
+) -> Optional[str]:
+    """Generate subtle punch-zoom filter on punchline climax (1.10x - 1.15x).
+
+    If punch_start_sec and punch_end_sec are not specified, defaults to the final
+    climax beat (last 3.5 seconds of the clip, e.g. dur-3.5 to dur-0.5).
+    """
+    if clip_duration < 6.0:
+        return None
+
+    zf = max(1.05, min(1.20, float(zoom_factor)))
+    p_start = punch_start_sec if punch_start_sec is not None else max(0.0, clip_duration - 4.0)
+    p_end = punch_end_sec if punch_end_sec is not None else max(p_start + 1.0, clip_duration - 0.5)
+
+    if p_end <= p_start:
+        return None
+
+    return (
+        f"crop=w='if(between(t,{p_start:.2f},{p_end:.2f}),iw/{zf:.3f},iw)':"
+        f"h='if(between(t,{p_start:.2f},{p_end:.2f}),ih/{zf:.3f},ih)':"
+        f"x='(iw-ow)/2':y='(ih-oh)/2',"
+        f"scale=1080:1920:flags=lanczos"
+    )
+
+
+def compress_internal_dead_air(
+    words: List[Any],
+    rough_path: str,
+    output_path: str,
+    min_gap_sec: float = 0.40,
+    target_gap_sec: float = 0.15,
+    use_cpu: bool = False,
+    job_id: Optional[str] = None,
+) -> Tuple[List[Any], str]:
+    """Compress silence gaps > min_gap_sec down to target_gap_sec in audio and video.
+
+    Returns (retimed_words, compressed_video_path).
+    Retimes all word subtitle timestamps to match the shortened video track.
+    If no gap exceeds min_gap_sec, returns the original words and rough_path unchanged.
+    """
+    if not words or len(words) < 2 or not os.path.isfile(rough_path):
+        return words, rough_path
+
+    # Normalize words to dicts
+    parsed_words = []
+    is_tuple = False
+    for w in words:
+        if isinstance(w, (list, tuple)):
+            is_tuple = True
+            parsed_words.append({"start": float(w[0]), "end": float(w[1]), "word": str(w[2])})
+        elif isinstance(w, dict):
+            parsed_words.append({
+                "start": float(w.get("start", 0.0)),
+                "end": float(w.get("end", 0.0)),
+                "word": str(w.get("word", "")),
+            })
+
+    # Find dead air gaps
+    gaps = []
+    for i in range(len(parsed_words) - 1):
+        w_curr = parsed_words[i]
+        w_next = parsed_words[i + 1]
+        gap_dur = w_next["start"] - w_curr["end"]
+        if gap_dur > min_gap_sec:
+            excess = gap_dur - target_gap_sec
+            cut_start = w_curr["end"] + (target_gap_sec / 2.0)
+            cut_end = w_next["start"] - (target_gap_sec / 2.0)
+            gaps.append((cut_start, cut_end, excess, i + 1))
+
+    if not gaps:
+        return words, rough_path
+
+    total_dur = get_media_duration_seconds(rough_path)
+    if total_dur <= 0:
+        total_dur = parsed_words[-1]["end"] + 1.0
+
+    # Build kept segments
+    segments = []
+    curr_t = 0.0
+    for cut_s, cut_e, excess, next_w_idx in gaps:
+        if cut_s > curr_t:
+            segments.append((curr_t, cut_s))
+        curr_t = max(curr_t, cut_e)
+    if curr_t < total_dur:
+        segments.append((curr_t, total_dur))
+
+    if len(segments) <= 1:
+        return words, rough_path
+
+    ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
+    filter_parts = []
+    inputs_v = []
+    inputs_a = []
+    for idx, (seg_s, seg_e) in enumerate(segments):
+        filter_parts.append(
+            f"[0:v]trim=start={seg_s:.3f}:end={seg_e:.3f},setpts=PTS-STARTPTS[v{idx}];"
+            f"[0:a]atrim=start={seg_s:.3f}:end={seg_e:.3f},asetpts=PTS-STARTPTS[a{idx}]"
+        )
+        inputs_v.append(f"[v{idx}]")
+        inputs_a.append(f"[a{idx}]")
+
+    concat_inputs = "".join(f"{inputs_v[i]}{inputs_a[i]}" for i in range(len(segments)))
+    concat_filter = f"{';'.join(filter_parts)};{concat_inputs}concat=n={len(segments)}:v=1:a=1[outv][outa]"
+
+    enc = get_video_encoder_flags(use_cpu=use_cpu, intermediate=True)
+    cmd = [
+        ffmpeg_bin, "-y", "-v", "error",
+        "-i", os.path.abspath(rough_path),
+        "-filter_complex", concat_filter,
+        "-map", "[outv]", "-map", "[outa]",
+    ] + enc + ["-c:a", "aac", os.path.abspath(output_path)]
+
+    try:
+        subprocess.run(cmd, capture_output=True, check=True)
+    except Exception as e:
+        logger.warning(f"Dead air trimming failed, falling back to original: {e}")
+        return words, rough_path
+
+    # Retime words by subtracting cumulative cut duration before each word
+    retimed_parsed = []
+    for idx, w in enumerate(parsed_words):
+        cum_cut = sum(excess for cut_s, cut_e, excess, next_idx in gaps if idx >= next_idx)
+        new_start = round(max(0.0, w["start"] - cum_cut), 3)
+        new_end = round(max(new_start + 0.05, w["end"] - cum_cut), 3)
+        retimed_parsed.append({"start": new_start, "end": new_end, "word": w["word"]})
+
+    if is_tuple:
+        retimed_words = [(w["start"], w["end"], w["word"]) for w in retimed_parsed]
+    else:
+        retimed_words = retimed_parsed
+
+    logger.info(f"Compressed {len(gaps)} dead-air gap(s), saved {sum(g[2] for g in gaps):.2f}s of silence.")
+    return retimed_words, output_path
+
+
 def render_vertical_clip(
     rough_clip_path: str,
     ass_path: Optional[str],
@@ -367,13 +506,21 @@ def render_vertical_clip(
     def cam_tile(src_label: str, bg_label: str, rect: Tuple[int, int, int, int], cell_w: int,
                  band_h: int, max_h: int, tag: str, out: str) -> Tuple[List[str], str, int, int]:
         """Filters that make one cam tile: the WHOLE cam at a capped zoom, centred over a
-        blurred copy of itself that fills the cell. Returns (filters, "ai"|"src", tile_w, tile_h)."""
+        wider context crop of the stream that fills the cell with real pixels.
+        Returns (filters, "ai"|"src", tile_w, tile_h)."""
         x, y, w, h = rect
         tw, th, _ = cam_tile_geometry(rect, cell_w, max_h, cam_max_scale)
-        sw, sh = max(2, cell_w // 6), max(2, band_h // 6)
+
+        # To avoid blurry side bars, crop a wider context box from the stream matching cell aspect ratio
+        aspect_cell = float(cell_w) / float(max(1, band_h))
+        bg_w = min(src_w, max(w, int(round(h * aspect_cell))))
+        bg_h = min(src_h, max(h, int(round(bg_w / aspect_cell))))
+        bg_x = max(0, min(src_w - bg_w, x - (bg_w - w) // 2))
+        bg_y = max(0, min(src_h - bg_h, y - (bg_h - h) // 2))
+
         parts = [
-            f"[{bg_label}] crop={w}:{h}:{x}:{y},scale={sw}:{sh}:force_original_aspect_ratio=increase,"
-            f"crop={sw}:{sh},gblur=sigma=5,eq=brightness=-0.12,scale={cell_w}:{band_h}:flags=bicubic,setsar=1 [{out}_bg]"
+            f"[{bg_label}] crop={bg_w}:{bg_h}:{bg_x}:{bg_y},scale={cell_w}:{band_h}:flags=bicubic,"
+            f"gblur=sigma=3,eq=brightness=-0.10,setsar=1 [{out}_bg]"
         ]
         fg = None
         if ai_on and needs_upscale(w, h, tw, th):
@@ -480,6 +627,16 @@ def render_vertical_clip(
 
     curr_v = base_label
 
+    # Subtle punch-zoom (1.10x - 1.15x) on punchline climax if enabled
+    pz_cfg = load_config().get("polish", {}).get("punch_zoom", {})
+    if pz_cfg.get("enabled", True):
+        dur = get_media_duration_seconds(abs_rough)
+        zf = float(pz_cfg.get("factor", 1.12))
+        pz_filt = build_punch_zoom_filter(dur, zoom_factor=zf)
+        if pz_filt:
+            filter_parts.append(f"{curr_v} {pz_filt} [v_zoom]")
+            curr_v = "[v_zoom]"
+
     # Burn in ASS captions if present
     if ass_path and os.path.isfile(ass_path):
         abs_ass = os.path.abspath(ass_path)
@@ -528,7 +685,6 @@ def render_vertical_clip(
     pol = load_config().get("polish", {})
     if pol.get("progress_bar", True):
         try:
-            from .detection import get_media_duration_seconds
             clip_dur = float(get_media_duration_seconds(abs_rough))
         except Exception:
             clip_dur = 0.0
@@ -556,7 +712,6 @@ def render_vertical_clip(
 
     # Short fades so the clip doesn't start/stop with a click mid-word
     try:
-        from .detection import get_media_duration_seconds
         a_dur = float(get_media_duration_seconds(abs_rough))
     except Exception:
         a_dur = 0.0

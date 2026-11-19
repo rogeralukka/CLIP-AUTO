@@ -459,6 +459,26 @@ def render_pipeline_moments(
 
         check_cancelled_or_paused(job_id)
 
+        # Dead-air trimming: shrink gaps > 0.4s down to 0.15s and retime captions
+        silence_cfg = cfg.get("polish", {}).get("silence", {})
+        if silence_cfg.get("remove_internal_dead_air", True) and len(words) > 1:
+            from .cutter import compress_internal_dead_air
+            min_g = float(silence_cfg.get("dead_air_min_gap_seconds", 0.40))
+            tgt_g = float(silence_cfg.get("dead_air_target_gap_seconds", 0.15))
+            tight_rough = rough_path.replace(".mp4", "_tight.mp4")
+            words, tight_path = compress_internal_dead_air(
+                words=words,
+                rough_path=rough_path,
+                output_path=tight_rough,
+                min_gap_sec=min_g,
+                target_gap_sec=tgt_g,
+                use_cpu=cpu,
+                job_id=job_id,
+            )
+            if tight_path != rough_path and os.path.isfile(tight_path):
+                rough_path = tight_path
+                dur = float(get_media_duration_seconds(rough_path) or dur)
+
         # Detect facecam and determine vertical layout
         clip_step(0.55, f"Clip {i} of {total}: checking for facecam / people")
         clip_layout = (m.get("layout") if isinstance(m, dict) else None) or "auto"
@@ -536,6 +556,7 @@ def render_pipeline_moments(
             "breakdown": m.get("breakdown") if isinstance(m, dict) else None,
             "llm_reason": m.get("llm_reason") if isinstance(m, dict) else None,
             "hype_score": score,
+            "sub_scores": m.get("sub_scores") if isinstance(m, dict) else None,
             "hook_title": hook_title,
             "preview": preview,
             "word_count": len(words),
