@@ -168,7 +168,7 @@ def call_ollama_generate(
     Provides cloud-speed inference (<1s via Groq/NVIDIA) with graceful offline fallback."""
     try:
         from .llm_cascade import call_llm_cascade
-        cascade_res = call_llm_cascade(prompt, endpoint=endpoint, local_model=model, timeout=timeout)
+        cascade_res = call_llm_cascade(prompt, endpoint=endpoint, local_model=model, timeout=timeout, preferred_model=model)
         if cascade_res:
             return cascade_res
     except Exception as e:

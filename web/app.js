@@ -64,11 +64,20 @@ async function refreshSys() {
     $("#sys-gpu").textContent = s.gpu.ok ? s.gpu.name.replace(/NVIDIA GeForce |Laptop GPU/g, "").trim() : "not found";
     $("#sys-vram").style.width = s.gpu.ok ? (100 * s.gpu.mem_used / s.gpu.mem_total) + "%" : "0";
     const cas = s.cascade || {};
-    const prov = cas.active_provider || s.llm.model || "ready";
-    const shortProv = prov.includes("groq") ? "Groq 27B" : prov.includes("nvidia") ? "NVIDIA NIM" : prov.includes("gemini") ? "Gemini Flash" : prov;
-    $("#sys-llm").innerHTML = !s.llm.enabled
-      ? '<span class="muted">off</span>'
-      : `<span style="color:var(--ok)" title="Active AI Engine: ${esc(prov)}">⚡ ${esc(shortProv)}</span>`;
+    const prov = String(cas.active_provider || s.llm.model || "ready").toLowerCase();
+    let badgeHtml = "";
+    if (!s.llm.enabled) {
+      badgeHtml = '<span class="muted">off</span>';
+    } else if (prov.includes("nvidia") || prov.includes("nemotron")) {
+      badgeHtml = '<span style="color:#76b900;font-weight:600" title="Active AI Engine: NVIDIA NIM (Nemotron 3.5)">🟢 NVIDIA NIM</span>';
+    } else if (prov.includes("groq")) {
+      badgeHtml = '<span style="color:#f55036;font-weight:600" title="Active AI Engine: Groq Cloud (Qwen 27B)">⚡ Groq 27B</span>';
+    } else if (prov.includes("gemini")) {
+      badgeHtml = '<span style="color:#4285f4;font-weight:600" title="Active AI Engine: Google Gemini (Flash)">🔵 Gemini Flash</span>';
+    } else {
+      badgeHtml = `<span style="color:var(--ok);font-weight:600" title="Active AI Engine: ${esc(prov)}">💻 ${esc(s.llm.model || "Local GPU")}</span>`;
+    }
+    $("#sys-llm").innerHTML = badgeHtml;
     $("#sys-whisper").textContent = s.whisper_model;
   } catch (e) {}
 }
@@ -818,7 +827,11 @@ async function renderLive(full = true, liveData = null) {
       case 'draining': return '<span class="chip warn">🔄 FINISHING BUFFER</span>';
       case 'paused': return '<span class="chip warn">⏸ PAUSED</span>';
       case 'waiting_network': return '<span class="chip bad">⚠️ NO INTERNET</span>';
-      case 'judging': return '<span class="chip hot">🧠 AI JUDGE (Cloud Cascade)</span>';
+      case 'judging': {
+        const prov = (S.sys?.cascade?.active_provider || "").toLowerCase();
+        const lbl = prov.includes("nvidia") ? "NVIDIA NIM" : prov.includes("groq") ? "Groq 27B" : prov.includes("gemini") ? "Gemini Flash" : "Cloud AI";
+        return `<span class="chip hot">🧠 AI JUDGE (${lbl})</span>`;
+      }
       case 'transcribing': return '<span class="chip warn">🎙️ TRANSCRIBING</span>';
       case 'rendering': return '<span class="chip ac">🎬 RENDERING 9:16</span>';
       case 'cutting': return '<span class="chip warn">✂️ EXTRACTING</span>';
@@ -1806,6 +1819,15 @@ async function renderSettings() {
   const curSens = s.default_sensitivity || localStorage.getItem("clip_default_sens") || "Medium";
   const curLiveSens = s.live_sensitivity != null ? String(s.live_sensitivity) : (localStorage.getItem("clip_live_sens") || "2.2");
   const cas = s.cascade || {};
+  const localOnlyModels = models.filter(m => !m.startsWith("groq-") && !m.startsWith("nvidia-") && !m.startsWith("gemini-"));
+  const engineOptions = [
+    { id: "nvidia-nemotron", name: "🟢 NVIDIA NIM (Nemotron 3.5 & MiniMax Flash · Priority)" },
+    { id: "groq-qwen27b", name: "⚡ Groq Cloud (Qwen 27B · Instant ~0.8s Priority)" },
+    { id: "gemini-flash", name: "🔵 Google Gemini (Gemini 3.8 Flash Priority)" },
+    { id: "auto", name: "🔄 Auto Cascade (Fastest Available · Groq -> NVIDIA -> Gemini -> Local)" },
+    ...localOnlyModels.map(m => ({ id: m, name: `💻 Local GPU: ${m}` }))
+  ];
+  const curModel = s.llm.model || "nvidia-nemotron";
   main.innerHTML = `
   <div class="head"><div><h1>Settings</h1><p>Saved to config/user_overrides.yaml. Your main config file is never rewritten.</p></div></div>
   <div class="grid2">
@@ -1818,9 +1840,11 @@ async function renderSettings() {
         <span class="chip ${cas.providers_configured?.gemini ? 'ok' : 'warn'}">🔵 Google Gemini: ${cas.providers_configured?.gemini ? 'Connected' : 'No key'}</span>
         <span class="chip ok">💻 Local GPU: Ready</span>
       </div>
-      <div class="col"><span class="lbl">Offline Model (Ollama)</span>
-        ${models.length ? `<select id="s-model">${models.map(m => `<option ${m === s.llm.model ? "selected" : ""}>${esc(m)}</option>`).join("")}</select>` : `<input type="text" id="s-model" value="${esc(s.llm.model)}">`}
-        <span class="small ${s.ollama.running ? "" : "muted"}" style="${s.ollama.running ? "color:var(--ok)" : ""}">${s.ollama.running ? `Ollama running · ${models.length} model(s)` : "Ollama isn't running. Install it, then run: ollama pull " + esc(s.llm.model)}</span></div>
+      <div class="col"><span class="lbl">Primary AI Judge Engine</span>
+        <select id="s-model">
+          ${engineOptions.map(opt => `<option value="${esc(opt.id)}" ${opt.id === curModel ? "selected" : ""}>${esc(opt.name)}</option>`).join("")}
+        </select>
+        <span class="small muted">Your selected AI engine is prioritized. If busy or rate-limited, CLIP AUTO automatically cascades to the other tiers so no clips are lost.</span></div>
       <hr>
       <div class="col"><span class="lbl">Whisper model</span><select id="s-whisper">${["large-v3", "large-v3-turbo", "distil-large-v3", "medium"].map(m => `<option ${m === s.whisper_model ? "selected" : ""}>${m}</option>`).join("")}</select>
         <span class="muted small">large-v3 = most accurate. large-v3-turbo = much faster, nearly as good. Good pick for launch day.</span></div>

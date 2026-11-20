@@ -107,14 +107,14 @@ def call_groq(prompt: str, system_prompt: Optional[str] = None, timeout: float =
     return None
 
 
-def call_nvidia(prompt: str, system_prompt: Optional[str] = None, timeout: float = 15.0) -> Optional[str]:
-    """Tier 2: NVIDIA NIM (Nemotron & High-IQ Cloud Reasoning)."""
+def call_nvidia(prompt: str, system_prompt: Optional[str] = None, timeout: float = 20.0) -> Optional[str]:
+    """Tier 2: NVIDIA NIM (Nemotron 3.5 & High-IQ Cloud Reasoning)."""
     api_key = _get_api_key("NVIDIA_API_KEY")
     if not api_key:
         return None
 
     # Tested and reliable models on integrate.api.nvidia.com
-    models = ["minimaxai/minimax-m3.1-flash", "nvidia/nemotron-3.5-lightning-30b-a3b", "google/gemma-4-31b-it"]
+    models = ["nvidia/nemotron-3.5-lightning-30b-a3b", "minimaxai/minimax-m3.1-flash", "google/gemma-4-31b-it"]
     sys_content = system_prompt or "You are a master viral video editor and content strategist. Output strict, valid JSON only."
 
     for model in models:
@@ -134,7 +134,7 @@ def call_nvidia(prompt: str, system_prompt: Optional[str] = None, timeout: float
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.2,
-                    "max_tokens": 1024
+                    "max_tokens": 2048
                 },
                 timeout=timeout
             )
@@ -233,62 +233,107 @@ def call_llm_cascade(
     system_prompt: Optional[str] = None,
     endpoint: str = "http://localhost:11434",
     local_model: str = "qwen3:14b",
-    timeout: float = 120.0
+    timeout: float = 120.0,
+    preferred_model: Optional[str] = None,
 ) -> Optional[str]:
     """Execute LLM call across cascading tiers until a high-quality answer is obtained.
 
-    Order:
-      1. Groq Cloud (~0.8s, Qwen 27B)
-      2. NVIDIA NIM (~5s, MiniMax Flash / Nemotron)
-      3. Google Gemini (~6s, Gemini Flash)
-      4. Local Ollama (Offline / GPU fallback)
+    Respects user model preference (NVIDIA Nemotron, Groq, Gemini, or Local) with
+    automatic failover so inference never stalls.
     """
     global _last_active_provider, _last_latency_s
-    t_start = time.time()
 
-    # 1. Try Groq Cloud
-    if _get_api_key("GROQ_API_KEY"):
+    # Determine user preference
+    pref = preferred_model
+    if not pref:
+        try:
+            from .config import load_config
+            pref = load_config().get("llm", {}).get("model", "")
+        except Exception:
+            pref = ""
+    pref_str = str(pref or "").strip().lower()
+
+    # Define tier executors
+    def run_groq():
+        if _get_api_key("GROQ_API_KEY"):
+            t0 = time.time()
+            res = call_groq(prompt, system_prompt=system_prompt, timeout=12.0)
+            if res:
+                return res, "groq (qwen 27b)", round(time.time() - t0, 2)
+        return None, None, 0.0
+
+    def run_nvidia():
+        if _get_api_key("NVIDIA_API_KEY"):
+            t0 = time.time()
+            res = call_nvidia(prompt, system_prompt=system_prompt, timeout=20.0)
+            if res:
+                return res, "nvidia (nemotron)", round(time.time() - t0, 2)
+        return None, None, 0.0
+
+    def run_gemini():
+        if _get_api_key("GEMINI_API_KEY"):
+            t0 = time.time()
+            res = call_gemini(prompt, system_prompt=system_prompt, timeout=15.0)
+            if res:
+                return res, "gemini (flash)", round(time.time() - t0, 2)
+        return None, None, 0.0
+
+    def run_ollama():
         t0 = time.time()
-        res = call_groq(prompt, system_prompt=system_prompt, timeout=12.0)
+        res = call_local_ollama(prompt, endpoint=endpoint, model=local_model, timeout=timeout)
         if res:
-            _last_active_provider = "groq (qwen 27b)"
-            _last_latency_s = round(time.time() - t0, 2)
-            return res
+            return res, f"ollama ({local_model})", round(time.time() - t0, 2)
+        return None, None, 0.0
 
-    # 2. Try NVIDIA NIM
-    if _get_api_key("NVIDIA_API_KEY"):
-        t0 = time.time()
-        res = call_nvidia(prompt, system_prompt=system_prompt, timeout=15.0)
+    # Determine execution order based on user preference
+    if "nvidia" in pref_str or "nemotron" in pref_str:
+        order = [run_nvidia, run_groq, run_gemini, run_ollama]
+    elif "groq" in pref_str:
+        order = [run_groq, run_nvidia, run_gemini, run_ollama]
+    elif "gemini" in pref_str:
+        order = [run_gemini, run_groq, run_nvidia, run_ollama]
+    elif pref_str and not any(k in pref_str for k in ("auto", "cascade", "default")):
+        # User specified local model (e.g. qwen3:14b)
+        order = [run_ollama, run_groq, run_nvidia, run_gemini]
+    else:
+        # Default Auto Cascade (fastest available first)
+        order = [run_groq, run_nvidia, run_gemini, run_ollama]
+
+    for runner in order:
+        res, prov_name, latency = runner()
         if res:
-            _last_active_provider = "nvidia (nemotron/minimax)"
-            _last_latency_s = round(time.time() - t0, 2)
+            _last_active_provider = prov_name
+            _last_latency_s = latency
             return res
-
-    # 3. Try Google Gemini
-    if _get_api_key("GEMINI_API_KEY"):
-        t0 = time.time()
-        res = call_gemini(prompt, system_prompt=system_prompt, timeout=15.0)
-        if res:
-            _last_active_provider = "gemini (flash)"
-            _last_latency_s = round(time.time() - t0, 2)
-            return res
-
-    # 4. Fallback to Local Ollama
-    t0 = time.time()
-    res = call_local_ollama(prompt, endpoint=endpoint, model=local_model, timeout=timeout)
-    if res:
-        _last_active_provider = f"ollama ({local_model})"
-        _last_latency_s = round(time.time() - t0, 2)
-        return res
 
     logger.error("All LLM tiers in cascade failed or rate-limited.")
     return None
 
 
-def get_llm_status() -> Dict[str, Any]:
-    """Return diagnostic status of all configured providers."""
+def get_llm_status(preferred_model: Optional[str] = None) -> Dict[str, Any]:
+    """Return diagnostic status of all configured providers, reflecting user preference."""
+    try:
+        from .config import load_config
+        pref = preferred_model or load_config().get("llm", {}).get("model", "")
+    except Exception:
+        pref = preferred_model or ""
+
+    pref_lower = str(pref or "").lower()
+    if "nvidia" in pref_lower or "nemotron" in pref_lower:
+        active_display = "nvidia (nemotron)"
+    elif "groq" in pref_lower:
+        active_display = "groq (qwen 27b)"
+    elif "gemini" in pref_lower:
+        active_display = "gemini (flash)"
+    elif pref and not any(k in pref_lower for k in ("auto", "cascade")):
+        active_display = f"ollama ({pref})"
+    else:
+        active_display = _last_active_provider or "auto cascade"
+
     return {
-        "active_provider": _last_active_provider,
+        "selected_model": pref,
+        "active_provider": active_display,
+        "last_active_provider": _last_active_provider,
         "last_latency_s": _last_latency_s,
         "providers_configured": {
             "groq": bool(_get_api_key("GROQ_API_KEY")),
