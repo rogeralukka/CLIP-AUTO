@@ -1,0 +1,126 @@
+{
+  "clip_id": "2e1nsze_Mjg",
+  "stream_id": "qSyo5d-dVzA",
+  "clip_duration": 31.02,
+  "stream_duration": 85541.92,
+  "matched": true,
+  "confidence": 0.9745,
+  "stream_start": 32455.6,
+  "stream_end": 32485.6,
+  "matched_duration": 30.0,
+  "chunk_matches": [
+    {
+      "clip_start": 0.0,
+      "clip_end": 4.0,
+      "stream_start": 32455.595937500002,
+      "stream_end": 32459.595937500002,
+      "correlation": 0.9795,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 2.0,
+      "clip_end": 6.0,
+      "stream_start": 32457.595937500002,
+      "stream_end": 32461.595937500002,
+      "correlation": 0.9753,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 4.0,
+      "clip_end": 8.0,
+      "stream_start": 32459.595937500002,
+      "stream_end": 32463.595937500002,
+      "correlation": 0.9738,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 6.0,
+      "clip_end": 10.0,
+      "stream_start": 32461.595937500002,
+      "stream_end": 32465.595937500002,
+      "correlation": 0.9746,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 8.0,
+      "clip_end": 12.0,
+      "stream_start": 32463.595937500002,
+      "stream_end": 32467.595937500002,
+      "correlation": 0.9735,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 10.0,
+      "clip_end": 14.0,
+      "stream_start": 32465.595937500002,
+      "stream_end": 32469.595937500002,
+      "correlation": 0.9639,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 12.0,
+      "clip_end": 16.0,
+      "stream_start": 32467.595937500002,
+      "stream_end": 32471.595937500002,
+      "correlation": 0.9625,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 14.0,
+      "clip_end": 18.0,
+      "stream_start": 32469.595937500002,
+      "stream_end": 32473.595937500002,
+      "correlation": 0.9783,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 16.0,
+      "clip_end": 20.0,
+      "stream_start": 32471.595937500002,
+      "stream_end": 32475.595937500002,
+      "correlation": 0.9815,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 18.0,
+      "clip_end": 22.0,
+      "stream_start": 32473.595937500002,
+      "stream_end": 32477.595937500002,
+      "correlation": 0.9813,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 20.0,
+      "clip_end": 24.0,
+      "stream_start": 32475.595937500002,
+      "stream_end": 32479.595937500002,
+      "correlation": 0.9816,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 22.0,
+      "clip_end": 26.0,
+      "stream_start": 32477.595937500002,
+      "stream_end": 32481.595937500002,
+      "correlation": 0.9794,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 24.0,
+      "clip_end": 28.0,
+      "stream_start": 32479.595937500002,
+      "stream_end": 32483.595937500002,
+      "correlation": 0.9795,
+      "offset": 32455.5959
+    },
+    {
+      "clip_start": 26.0,
+      "clip_end": 30.0,
+      "stream_start": 32481.595875000003,
+      "stream_end": 32485.595875000003,
+      "correlation": 0.9581,
+      "offset": 32455.5959
+    }
+  ],
+  "notes": "Matched 14/14 chunks (avg corr=0.974)"
+}

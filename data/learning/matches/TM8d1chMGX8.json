@@ -1,0 +1,246 @@
+{
+  "clip_id": "TM8d1chMGX8",
+  "stream_id": "qSyo5d-dVzA",
+  "clip_duration": 63.51,
+  "stream_duration": 85541.92,
+  "matched": true,
+  "confidence": 0.9491,
+  "stream_start": 41229.48,
+  "stream_end": 41291.45,
+  "matched_duration": 61.97,
+  "chunk_matches": [
+    {
+      "clip_start": 0.0,
+      "clip_end": 4.0,
+      "stream_start": 41229.4848125,
+      "stream_end": 41233.4848125,
+      "correlation": 0.9899,
+      "offset": 41229.4848
+    },
+    {
+      "clip_start": 2.0,
+      "clip_end": 6.0,
+      "stream_start": 41231.4848125,
+      "stream_end": 41235.4848125,
+      "correlation": 0.986,
+      "offset": 41229.4848
+    },
+    {
+      "clip_start": 4.0,
+      "clip_end": 8.0,
+      "stream_start": 41233.4848125,
+      "stream_end": 41237.4848125,
+      "correlation": 0.9809,
+      "offset": 41229.4848
+    },
+    {
+      "clip_start": 6.0,
+      "clip_end": 10.0,
+      "stream_start": 41235.4848125,
+      "stream_end": 41239.4848125,
+      "correlation": 0.977,
+      "offset": 41229.4848
+    },
+    {
+      "clip_start": 8.0,
+      "clip_end": 12.0,
+      "stream_start": 41237.4848125,
+      "stream_end": 41241.4848125,
+      "correlation": 0.9813,
+      "offset": 41229.4848
+    },
+    {
+      "clip_start": 10.0,
+      "clip_end": 14.0,
+      "stream_start": 41239.4848125,
+      "stream_end": 41243.4848125,
+      "correlation": 0.9836,
+      "offset": 41229.4848
+    },
+    {
+      "clip_start": 12.0,
+      "clip_end": 16.0,
+      "stream_start": 41241.4848125,
+      "stream_end": 41245.4848125,
+      "correlation": 0.9608,
+      "offset": 41229.4848
+    },
+    {
+      "clip_start": 14.0,
+      "clip_end": 18.0,
+      "stream_start": 41243.484749999996,
+      "stream_end": 41247.484749999996,
+      "correlation": 0.9802,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 16.0,
+      "clip_end": 20.0,
+      "stream_start": 41245.484749999996,
+      "stream_end": 41249.484749999996,
+      "correlation": 0.9927,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 18.0,
+      "clip_end": 22.0,
+      "stream_start": 41247.484749999996,
+      "stream_end": 41251.484749999996,
+      "correlation": 0.9906,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 20.0,
+      "clip_end": 24.0,
+      "stream_start": 41249.484749999996,
+      "stream_end": 41253.484749999996,
+      "correlation": 0.9881,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 22.0,
+      "clip_end": 26.0,
+      "stream_start": 41251.484749999996,
+      "stream_end": 41255.484749999996,
+      "correlation": 0.9904,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 24.0,
+      "clip_end": 28.0,
+      "stream_start": 41253.484749999996,
+      "stream_end": 41257.484749999996,
+      "correlation": 0.9868,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 26.0,
+      "clip_end": 30.0,
+      "stream_start": 41255.484749999996,
+      "stream_end": 41259.484749999996,
+      "correlation": 0.9859,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 28.0,
+      "clip_end": 32.0,
+      "stream_start": 41257.484749999996,
+      "stream_end": 41261.484749999996,
+      "correlation": 0.9884,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 30.0,
+      "clip_end": 34.0,
+      "stream_start": 41259.484749999996,
+      "stream_end": 41263.484749999996,
+      "correlation": 0.9882,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 32.0,
+      "clip_end": 36.0,
+      "stream_start": 41261.484749999996,
+      "stream_end": 41265.484749999996,
+      "correlation": 0.9912,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 34.0,
+      "clip_end": 38.0,
+      "stream_start": 41263.484749999996,
+      "stream_end": 41267.484749999996,
+      "correlation": 0.9918,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 36.0,
+      "clip_end": 40.0,
+      "stream_start": 41265.484749999996,
+      "stream_end": 41269.484749999996,
+      "correlation": 0.9939,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 38.0,
+      "clip_end": 42.0,
+      "stream_start": 41267.484749999996,
+      "stream_end": 41271.484749999996,
+      "correlation": 0.9905,
+      "offset": 41229.4847
+    },
+    {
+      "clip_start": 42.0,
+      "clip_end": 46.0,
+      "stream_start": 41271.45475,
+      "stream_end": 41275.45475,
+      "correlation": 0.8472,
+      "offset": 41229.4548
+    },
+    {
+      "clip_start": 44.0,
+      "clip_end": 48.0,
+      "stream_start": 41273.45475,
+      "stream_end": 41277.45475,
+      "correlation": 0.9903,
+      "offset": 41229.4548
+    },
+    {
+      "clip_start": 46.0,
+      "clip_end": 50.0,
+      "stream_start": 41275.45475,
+      "stream_end": 41279.45475,
+      "correlation": 0.987,
+      "offset": 41229.4548
+    },
+    {
+      "clip_start": 48.0,
+      "clip_end": 52.0,
+      "stream_start": 41277.45475,
+      "stream_end": 41281.45475,
+      "correlation": 0.9891,
+      "offset": 41229.4548
+    },
+    {
+      "clip_start": 50.0,
+      "clip_end": 54.0,
+      "stream_start": 41279.45475,
+      "stream_end": 41283.45475,
+      "correlation": 0.9886,
+      "offset": 41229.4548
+    },
+    {
+      "clip_start": 52.0,
+      "clip_end": 56.0,
+      "stream_start": 41281.45475,
+      "stream_end": 41285.45475,
+      "correlation": 0.9897,
+      "offset": 41229.4548
+    },
+    {
+      "clip_start": 54.0,
+      "clip_end": 58.0,
+      "stream_start": 41283.45475,
+      "stream_end": 41287.45475,
+      "correlation": 0.9903,
+      "offset": 41229.4548
+    },
+    {
+      "clip_start": 56.0,
+      "clip_end": 60.0,
+      "stream_start": 41285.45475,
+      "stream_end": 41289.45475,
+      "correlation": 0.9859,
+      "offset": 41229.4548
+    },
+    {
+      "clip_start": 58.0,
+      "clip_end": 62.0,
+      "stream_start": 41287.45475,
+      "stream_end": 41291.45475,
+      "correlation": 0.9853,
+      "offset": 41229.4548
+    }
+  ],
+  "notes": "Matched 29/30 chunks (avg corr=0.982)"
+}

@@ -1,0 +1,182 @@
+{
+  "clip_id": "tiBb0GZ6aQQ",
+  "stream_id": "hwSg39yIBGU",
+  "clip_duration": 44.5,
+  "stream_duration": 85282.34,
+  "matched": true,
+  "confidence": 0.9693,
+  "stream_start": 50929.32,
+  "stream_end": 50973.32,
+  "matched_duration": 44.0,
+  "chunk_matches": [
+    {
+      "clip_start": 0.0,
+      "clip_end": 4.0,
+      "stream_start": 50929.3151875,
+      "stream_end": 50933.3151875,
+      "correlation": 0.9744,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 2.0,
+      "clip_end": 6.0,
+      "stream_start": 50931.3151875,
+      "stream_end": 50935.3151875,
+      "correlation": 0.9411,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 4.0,
+      "clip_end": 8.0,
+      "stream_start": 50933.31525,
+      "stream_end": 50937.31525,
+      "correlation": 0.9341,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 6.0,
+      "clip_end": 10.0,
+      "stream_start": 50935.31525,
+      "stream_end": 50939.31525,
+      "correlation": 0.9589,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 8.0,
+      "clip_end": 12.0,
+      "stream_start": 50937.31525,
+      "stream_end": 50941.31525,
+      "correlation": 0.9661,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 10.0,
+      "clip_end": 14.0,
+      "stream_start": 50939.31525,
+      "stream_end": 50943.31525,
+      "correlation": 0.9691,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 12.0,
+      "clip_end": 16.0,
+      "stream_start": 50941.31525,
+      "stream_end": 50945.31525,
+      "correlation": 0.9691,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 14.0,
+      "clip_end": 18.0,
+      "stream_start": 50943.31525,
+      "stream_end": 50947.31525,
+      "correlation": 0.9672,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 16.0,
+      "clip_end": 20.0,
+      "stream_start": 50945.31525,
+      "stream_end": 50949.31525,
+      "correlation": 0.9879,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 18.0,
+      "clip_end": 22.0,
+      "stream_start": 50947.31525,
+      "stream_end": 50951.31525,
+      "correlation": 0.9813,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 20.0,
+      "clip_end": 24.0,
+      "stream_start": 50949.31525,
+      "stream_end": 50953.31525,
+      "correlation": 0.9767,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 22.0,
+      "clip_end": 26.0,
+      "stream_start": 50951.31525,
+      "stream_end": 50955.31525,
+      "correlation": 0.975,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 24.0,
+      "clip_end": 28.0,
+      "stream_start": 50953.31525,
+      "stream_end": 50957.31525,
+      "correlation": 0.986,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 26.0,
+      "clip_end": 30.0,
+      "stream_start": 50955.31525,
+      "stream_end": 50959.31525,
+      "correlation": 0.9951,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 28.0,
+      "clip_end": 32.0,
+      "stream_start": 50957.31525,
+      "stream_end": 50961.31525,
+      "correlation": 0.9807,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 30.0,
+      "clip_end": 34.0,
+      "stream_start": 50959.31525,
+      "stream_end": 50963.31525,
+      "correlation": 0.9595,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 32.0,
+      "clip_end": 36.0,
+      "stream_start": 50961.31525,
+      "stream_end": 50965.31525,
+      "correlation": 0.95,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 34.0,
+      "clip_end": 38.0,
+      "stream_start": 50963.31525,
+      "stream_end": 50967.31525,
+      "correlation": 0.9519,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 36.0,
+      "clip_end": 40.0,
+      "stream_start": 50965.31525,
+      "stream_end": 50969.31525,
+      "correlation": 0.9761,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 38.0,
+      "clip_end": 42.0,
+      "stream_start": 50967.3151875,
+      "stream_end": 50971.3151875,
+      "correlation": 0.9711,
+      "offset": 50929.3152
+    },
+    {
+      "clip_start": 40.0,
+      "clip_end": 44.0,
+      "stream_start": 50969.3151875,
+      "stream_end": 50973.3151875,
+      "correlation": 0.9845,
+      "offset": 50929.3152
+    }
+  ],
+  "notes": "Matched 21/21 chunks (avg corr=0.969)"
+}

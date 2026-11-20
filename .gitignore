@@ -69,3 +69,9 @@ config/social_accounts.yaml
 config/scheduled_posts.json
 config/scheduled_posts.json.tmp
 clips/custom_uploads/
+
+# Learning dataset media binaries (audio, video, large raw chat logs)
+data/learning/audio/
+data/learning/chat/
+data/learning/video/
+

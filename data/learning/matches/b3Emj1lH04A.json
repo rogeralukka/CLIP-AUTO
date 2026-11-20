@@ -1,0 +1,254 @@
+{
+  "clip_id": "b3Emj1lH04A",
+  "stream_id": "hwSg39yIBGU",
+  "clip_duration": 63.3,
+  "stream_duration": 85282.34,
+  "matched": true,
+  "confidence": 0.9794,
+  "stream_start": 69915.22,
+  "stream_end": 69977.22,
+  "matched_duration": 62.0,
+  "chunk_matches": [
+    {
+      "clip_start": 0.0,
+      "clip_end": 4.0,
+      "stream_start": 69915.221625,
+      "stream_end": 69919.221625,
+      "correlation": 0.978,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 2.0,
+      "clip_end": 6.0,
+      "stream_start": 69917.221625,
+      "stream_end": 69921.221625,
+      "correlation": 0.9826,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 4.0,
+      "clip_end": 8.0,
+      "stream_start": 69919.2215625,
+      "stream_end": 69923.2215625,
+      "correlation": 0.9772,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 6.0,
+      "clip_end": 10.0,
+      "stream_start": 69921.2215625,
+      "stream_end": 69925.2215625,
+      "correlation": 0.9827,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 8.0,
+      "clip_end": 12.0,
+      "stream_start": 69923.2215,
+      "stream_end": 69927.2215,
+      "correlation": 0.9786,
+      "offset": 69915.2215
+    },
+    {
+      "clip_start": 10.0,
+      "clip_end": 14.0,
+      "stream_start": 69925.2215,
+      "stream_end": 69929.2215,
+      "correlation": 0.9798,
+      "offset": 69915.2215
+    },
+    {
+      "clip_start": 12.0,
+      "clip_end": 16.0,
+      "stream_start": 69927.2215,
+      "stream_end": 69931.2215,
+      "correlation": 0.9835,
+      "offset": 69915.2215
+    },
+    {
+      "clip_start": 14.0,
+      "clip_end": 18.0,
+      "stream_start": 69929.2215,
+      "stream_end": 69933.2215,
+      "correlation": 0.9758,
+      "offset": 69915.2215
+    },
+    {
+      "clip_start": 16.0,
+      "clip_end": 20.0,
+      "stream_start": 69931.2215,
+      "stream_end": 69935.2215,
+      "correlation": 0.9754,
+      "offset": 69915.2215
+    },
+    {
+      "clip_start": 18.0,
+      "clip_end": 22.0,
+      "stream_start": 69933.2215,
+      "stream_end": 69937.2215,
+      "correlation": 0.9797,
+      "offset": 69915.2215
+    },
+    {
+      "clip_start": 20.0,
+      "clip_end": 24.0,
+      "stream_start": 69935.2215625,
+      "stream_end": 69939.2215625,
+      "correlation": 0.9759,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 22.0,
+      "clip_end": 26.0,
+      "stream_start": 69937.2215625,
+      "stream_end": 69941.2215625,
+      "correlation": 0.9688,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 24.0,
+      "clip_end": 28.0,
+      "stream_start": 69939.2215625,
+      "stream_end": 69943.2215625,
+      "correlation": 0.972,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 26.0,
+      "clip_end": 30.0,
+      "stream_start": 69941.2215625,
+      "stream_end": 69945.2215625,
+      "correlation": 0.9684,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 28.0,
+      "clip_end": 32.0,
+      "stream_start": 69943.221625,
+      "stream_end": 69947.221625,
+      "correlation": 0.9799,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 30.0,
+      "clip_end": 34.0,
+      "stream_start": 69945.221625,
+      "stream_end": 69949.221625,
+      "correlation": 0.976,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 32.0,
+      "clip_end": 36.0,
+      "stream_start": 69947.221625,
+      "stream_end": 69951.221625,
+      "correlation": 0.9741,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 34.0,
+      "clip_end": 38.0,
+      "stream_start": 69949.221625,
+      "stream_end": 69953.221625,
+      "correlation": 0.9815,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 36.0,
+      "clip_end": 40.0,
+      "stream_start": 69951.221625,
+      "stream_end": 69955.221625,
+      "correlation": 0.981,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 38.0,
+      "clip_end": 42.0,
+      "stream_start": 69953.221625,
+      "stream_end": 69957.221625,
+      "correlation": 0.9886,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 40.0,
+      "clip_end": 44.0,
+      "stream_start": 69955.221625,
+      "stream_end": 69959.221625,
+      "correlation": 0.9805,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 42.0,
+      "clip_end": 46.0,
+      "stream_start": 69957.221625,
+      "stream_end": 69961.221625,
+      "correlation": 0.9797,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 44.0,
+      "clip_end": 48.0,
+      "stream_start": 69959.221625,
+      "stream_end": 69963.221625,
+      "correlation": 0.983,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 46.0,
+      "clip_end": 50.0,
+      "stream_start": 69961.221625,
+      "stream_end": 69965.221625,
+      "correlation": 0.9858,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 48.0,
+      "clip_end": 52.0,
+      "stream_start": 69963.221625,
+      "stream_end": 69967.221625,
+      "correlation": 0.9822,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 50.0,
+      "clip_end": 54.0,
+      "stream_start": 69965.221625,
+      "stream_end": 69969.221625,
+      "correlation": 0.9803,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 52.0,
+      "clip_end": 56.0,
+      "stream_start": 69967.221625,
+      "stream_end": 69971.221625,
+      "correlation": 0.9808,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 54.0,
+      "clip_end": 58.0,
+      "stream_start": 69969.221625,
+      "stream_end": 69973.221625,
+      "correlation": 0.9831,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 56.0,
+      "clip_end": 60.0,
+      "stream_start": 69971.221625,
+      "stream_end": 69975.221625,
+      "correlation": 0.9823,
+      "offset": 69915.2216
+    },
+    {
+      "clip_start": 58.0,
+      "clip_end": 62.0,
+      "stream_start": 69973.221625,
+      "stream_end": 69977.221625,
+      "correlation": 0.9858,
+      "offset": 69915.2216
+    }
+  ],
+  "notes": "Matched 30/30 chunks (avg corr=0.979)"
+}
