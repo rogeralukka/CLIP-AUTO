@@ -348,6 +348,29 @@ class LiveStreamClipper:
             return False
 
         has_existing = os.path.isfile(self.buffer_file) and os.path.getsize(self.buffer_file) > 1024 * 1024
+        is_stale = False
+        if has_existing:
+            try:
+                mtime = os.path.getmtime(self.buffer_file)
+                # If the buffer has not been written to in >180s, the previous stream broadcast was offline.
+                # Never append across multi-minute/hour gaps to avoid MPEG-TS PTS discontinuities.
+                if (time.time() - mtime) > 180.0:
+                    is_stale = True
+            except OSError:
+                pass
+
+        if is_stale:
+            archive_name = f"live_stream_prev_{int(mtime)}.ts"
+            archive_path = os.path.join(self.buffer_dir, archive_name)
+            try:
+                os.replace(self.buffer_file, archive_path)
+                logger.info(f"Rotated stale live buffer ({int((time.time() - mtime)/60)}m old) -> {archive_name}")
+            except OSError as e:
+                logger.warning(f"Failed to rotate stale buffer: {e}")
+            has_existing = False
+            self.last_analyzed_time = 0.0
+            self.buffer_seconds = 0.0
+
         is_appending = append or has_existing
 
         streamlink_bin = get_streamlink_path()
@@ -506,6 +529,29 @@ class LiveStreamClipper:
         if not os.path.isfile(tail_wav):
             return []
 
+        # Guard against seeking into a PTS gap, discontinuity, or stuck buffer:
+        import hashlib
+        tail_hash = None
+        try:
+            if os.path.getsize(tail_wav) > 1000:
+                with open(tail_wav, "rb") as f:
+                    tail_hash = hashlib.sha256(f.read()).hexdigest()
+        except Exception:
+            pass
+
+        if tail_hash and tail_hash == getattr(self, "_last_tail_hash", None):
+            logger.warning(
+                f"Live buffer tail audio ({start_offset:.0f}s -> {end_offset:.0f}s) "
+                f"is identical to previous turn (hash={tail_hash[:8]}). "
+                f"Seek hit PTS discontinuity gap or stuck buffer. Skipping duplicate analysis and advancing past gap."
+            )
+            if self.last_analyzed_time < curr_duration - lookback_window:
+                self.last_analyzed_time = max(self.last_analyzed_time + 600.0, curr_duration - lookback_window)
+            else:
+                self.last_analyzed_time = curr_duration
+            return []
+        self._last_tail_hash = tail_hash
+
         comments = None
         if self.chat is not None:
             # Chat timestamps are wall-clock since capture start; buffer time ~ the same.
@@ -612,6 +658,14 @@ class LiveStreamClipper:
                     self._record_event("judge_reject", f"Candidate rejected: Duration under {min_clip_len:.0f}s minimum ({dur:.1f}s)")
                     continue
 
+                # Content-based title guard: never re-cut a moment with the same hook title
+                cand_title = str(m.get("hook_title") or "").strip().lower()
+                if cand_title and len(cand_title) >= 6:
+                    if any(cand_title == str(c.get("hook_title") or "").strip().lower() for c in self.clips_done):
+                        logger.info(f"Skipping duplicate moment at {start_s:.1f}s: matches title of already exported clip '{cand_title}'")
+                        self._record_event("judge_reject", f"Duplicate moment rejected: already clipped '{cand_title}'")
+                        continue
+
                 ts_str = datetime.datetime.now().strftime("%H%M%S")
                 clean_id = re.sub(r"[^a-zA-Z0-9_]", "", self.stream_id)[:8]
                 clip_base = f"live_{clean_id}_{ts_str}_{int(start_s)}s"
@@ -628,6 +682,28 @@ class LiveStreamClipper:
                 self._set_state("transcribing", f"Transcribing candidate moment at {int(start_s)}s with Whisper...")
                 words = transcribe_clip(rough_path, use_cpu=self.use_cpu, cache_dir=self.output_dir)
                 transcript_text = " ".join(w[2] for w in words).strip()
+
+                # Content-based dialogue guard: check spoken words against already completed clips
+                cand_words = set(re.findall(r"\w+", transcript_text.lower()))
+                is_text_dup = False
+                for cd in self.clips_done:
+                    prev_text = str(cd.get("transcript") or "").strip().lower()
+                    if prev_text and cand_words:
+                        prev_words = set(re.findall(r"\w+", prev_text))
+                        if prev_words:
+                            jaccard = len(cand_words & prev_words) / len(cand_words | prev_words)
+                            if jaccard >= 0.55 or (len(transcript_text) >= 40 and (transcript_text in prev_text or prev_text in transcript_text)):
+                                logger.info(f"Skipping duplicate moment at {start_s:.1f}s: transcript similarity {jaccard:.2f} to existing clip")
+                                self._record_event("judge_reject", f"Duplicate dialogue rejected ({jaccard:.0%} match to previous clip)")
+                                is_text_dup = True
+                                break
+                if is_text_dup:
+                    try:
+                        if os.path.isfile(rough_path):
+                            os.remove(rough_path)
+                    except OSError:
+                        pass
+                    continue
 
                 # Dead-air trimming: shrink gaps > 0.4s down to 0.15s and retime captions
                 silence_cfg = cfg.get("polish", {}).get("silence", {})
@@ -797,7 +873,7 @@ class LiveStreamClipper:
                     )
 
                 from .signals import record_clipped_moment
-                record_clipped_moment(self.live_vod_id, start_s, end_s, m.get("score", 0.0))
+                record_clipped_moment(self.live_vod_id, start_s, end_s, m.get("score", 0.0), hook_title=hook_title, transcript=transcript_text)
                 logger.info(f"Exported live clip -> {final_path} (QC: {qc['status']})")
                 self._record_event("rendered", f"Exported vertical clip '{hook_title}' ({round(dur, 1)}s, QC: {qc['status']})", score=m.get("score"))
                 rendered_clips.append(clip_meta)

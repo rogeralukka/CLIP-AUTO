@@ -654,6 +654,7 @@ def detect_facecam(
     elif (presence_ratio >= thresh or any_face_ratio >= 0.25) and near_edge and not is_big:
         # Corner facecam without a strict border (e.g. green-screened or borderless webcam)
         cam_box = padded_box
+        corner = cluster.get("corner", "unknown") if cluster else "unknown"
         cams = [{"rect": cam_box, "face_box": med_box, "presence": presence_ratio, "corner": corner, "kind": "corner_face"}]
         stream_type, layout, found = "gaming_facecam", "split", True
     elif any_face_ratio >= 0.22:

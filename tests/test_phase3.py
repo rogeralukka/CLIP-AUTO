@@ -42,7 +42,9 @@ class TestPhase3(unittest.TestCase):
         self.assertIsNone(validate_judge_response("Not json at all"))
         self.assertIsNone(validate_judge_response('{"standalone": true}'))  # missing score
 
-    def test_silent_fallback_when_disabled(self):
+    @patch("clipper.judge.load_config")
+    def test_silent_fallback_when_disabled(self, mock_cfg):
+        mock_cfg.return_value = {"llm": {"enabled": False}}
         moments = [
             {"start": 10.0, "end": 25.0, "score": 3.5},
             {"start": 40.0, "end": 55.0, "score": 2.8},

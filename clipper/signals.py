@@ -509,6 +509,24 @@ def snap_moment_boundaries(
     - End: captures the complete reaction and aftermath discussion (settle >= 25s after peak).
     """
     words = (full_transcript_data or {}).get("words", []) or []
+    if not words and full_transcript_data and "segments" in full_transcript_data:
+        words = []
+        for seg in full_transcript_data["segments"]:
+            seg_words = seg.get("words")
+            if seg_words:
+                words.extend(seg_words)
+            else:
+                tokens = str(seg.get("text", "")).split()
+                if tokens:
+                    s_t = float(seg.get("start", 0.0))
+                    e_t = float(seg.get("end", s_t + 1.0))
+                    w_dur = max(0.05, (e_t - s_t) / len(tokens))
+                    for idx, tok in enumerate(tokens):
+                        words.append({
+                            "word": tok,
+                            "start": round(s_t + idx * w_dur, 2),
+                            "end": round(s_t + (idx + 1) * w_dur, 2),
+                        })
 
     # 1. Where does the reaction settle?
     settle = min(stream_duration, peak_time + after)
@@ -568,11 +586,16 @@ def snap_moment_boundaries(
         if end - start < min_length:
             start = max(0.0, end - min_length)
     if end - start > max_length:
-        # Keep the payoff: cut setup from the front, at a sentence start if there is one
-        later, _ = _sentence_marks(words, end - max_length, peak_time - 2.0)
-        start = later[0][0] if later else end - max_length
-        if end - start > max_length:
-            start = end - max_length
+        # Keep the payoff: trim from front only up to peak_time, never past the moment!
+        max_start = max(0.0, peak_time - 2.0)
+        earliest_allowed = max(0.0, end - max_length)
+        if earliest_allowed <= max_start:
+            later, _ = _sentence_marks(words, earliest_allowed, max_start)
+            start = later[0][0] if later else earliest_allowed
+        else:
+            # Tail is too long; trim trailing aftermath so start stays before peak
+            start = min(start, max_start)
+            end = min(stream_duration, start + max_length)
 
     return round(start, 2), round(end, 2)
 
@@ -586,57 +609,89 @@ def dedupe_moments(
 ) -> List[Dict[str, Any]]:
     """Deduplicate moments against previously clipped moments stored in downloads/<vod_id>/clipped_moments.json.
 
-    Never output a moment overlapping > 50% with an existing or higher-ranked moment.
+    Never output a moment overlapping > 50% with an existing moment, sharing the same hook title,
+    or containing near-identical spoken dialogue (>55% Jaccard word similarity).
     """
     clipped_file = os.path.join(downloads_dir, vod_id, "clipped_moments.json")
     os.makedirs(os.path.dirname(clipped_file), exist_ok=True)
 
-    existing_ranges: List[Tuple[float, float]] = []
+    existing_records: List[Dict[str, Any]] = []
     if os.path.isfile(clipped_file):
         try:
             with open(clipped_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for item in data:
-                    existing_ranges.append((item["start"], item["end"]))
+                    if isinstance(item, dict):
+                        existing_records.append(item)
+                    elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                        existing_records.append({"start": float(item[0]), "end": float(item[1])})
         except Exception as e:
             logger.warning(f"Failed to read existing clipped moments: {e}")
 
     accepted_moments: List[Dict[str, Any]] = []
 
     for m in new_moments:
-        st = m["start"]
-        et = m["end"]
+        st = float(m["start"])
+        et = float(m["end"])
         dur = max(0.1, et - st)
+        cand_title = str(m.get("hook_title") or "").strip().lower()
+        cand_text = str(m.get("transcript") or m.get("text") or "").strip().lower()
+        cand_words = set(re.findall(r"\w+", cand_text)) if cand_text else set()
 
-        # Check overlap against existing and previously accepted in this batch
         overlapping = False
-        all_checks = existing_ranges + [(am["start"], am["end"]) for am in accepted_moments]
+        all_checks = existing_records + accepted_moments
 
-        for prev_s, prev_e in all_checks:
+        for prev in all_checks:
+            prev_s = float(prev.get("start", 0.0))
+            prev_e = float(prev.get("end", 0.0))
             prev_dur = max(0.1, prev_e - prev_s)
+
+            # 1. Check numeric time range overlap
             overlap_start = max(st, prev_s)
             overlap_end = min(et, prev_e)
             if overlap_end > overlap_start:
                 overlap_dur = overlap_end - overlap_start
-                # Overlap ratio relative to the shorter moment
                 ratio = overlap_dur / min(dur, prev_dur)
                 if ratio > overlap_threshold:
                     overlapping = True
                     break
 
+            # 2. Check hook title match (exact or near-exact string)
+            prev_title = str(prev.get("hook_title") or "").strip().lower()
+            if cand_title and prev_title and len(cand_title) >= 6:
+                if cand_title == prev_title or cand_title in prev_title or prev_title in cand_title:
+                    overlapping = True
+                    logger.info(f"Dedupe rejected candidate '{cand_title}': matches existing title '{prev_title}'")
+                    break
+
+            # 3. Check spoken transcript similarity (Jaccard word set similarity)
+            prev_text = str(prev.get("transcript") or prev.get("text") or "").strip().lower()
+            if cand_words and prev_text:
+                prev_words = set(re.findall(r"\w+", prev_text))
+                if prev_words:
+                    intersection = len(cand_words & prev_words)
+                    union = len(cand_words | prev_words)
+                    jaccard = intersection / union if union > 0 else 0.0
+                    if jaccard >= 0.55 or (len(cand_text) >= 40 and (cand_text in prev_text or prev_text in cand_text)):
+                        overlapping = True
+                        logger.info(f"Dedupe rejected candidate ({st:.1f}s-{et:.1f}s): transcript similarity {jaccard:.2f} to existing clip")
+                        break
+
         if not overlapping:
             accepted_moments.append(m)
 
-    # Detection must NOT write here: a moment only counts as "clipped" once it has been
-    # rendered (see record_clipped_moment). Otherwise re-running detection returns nothing.
     if not persist:
         return accepted_moments
 
-    updated_records = []
-    for s, e in existing_ranges:
-        updated_records.append({"start": s, "end": e})
+    updated_records = list(existing_records)
     for m in accepted_moments:
-        updated_records.append({"start": m["start"], "end": m["end"], "score": m.get("score", 0.0)})
+        updated_records.append({
+            "start": m["start"],
+            "end": m["end"],
+            "score": m.get("score", 0.0),
+            "hook_title": m.get("hook_title", ""),
+            "transcript": (m.get("transcript") or m.get("text") or "")[:500],
+        })
 
     try:
         with open(clipped_file, "w", encoding="utf-8") as f:
@@ -647,8 +702,15 @@ def dedupe_moments(
     return accepted_moments
 
 
-def record_clipped_moment(vod_id: str, start: float, end: float, score: float = 0.0,
-                          downloads_dir: str = "downloads") -> None:
+def record_clipped_moment(
+    vod_id: str,
+    start: float,
+    end: float,
+    score: float = 0.0,
+    downloads_dir: str = "downloads",
+    hook_title: str = "",
+    transcript: str = "",
+) -> None:
     """Remember a moment that was actually rendered, so later runs never clip it twice."""
     clipped_file = os.path.join(downloads_dir, vod_id, "clipped_moments.json")
     os.makedirs(os.path.dirname(clipped_file), exist_ok=True)
@@ -662,7 +724,13 @@ def record_clipped_moment(vod_id: str, start: float, end: float, score: float = 
     for r in records:
         if abs(r.get("start", -1) - start) < 1.0 and abs(r.get("end", -1) - end) < 1.0:
             return
-    records.append({"start": start, "end": end, "score": score})
+    records.append({
+        "start": start,
+        "end": end,
+        "score": score,
+        "hook_title": hook_title,
+        "transcript": transcript[:800] if transcript else "",
+    })
     try:
         with open(clipped_file, "w", encoding="utf-8") as f:
             json.dump(records, f, indent=2)
