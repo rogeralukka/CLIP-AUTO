@@ -201,10 +201,13 @@ def system():
     if not ok:
         _start_ollama_in_background()
     presets = sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob("presets/*.json"))
+    from clipper.llm_cascade import get_llm_status
+    cascade_status = get_llm_status()
     return {
         "gpu": _gpu_status(),
         "ollama": {"running": ok, "models": models},
         "llm": {"enabled": bool(llm.get("enabled")), "model": llm.get("model")},
+        "cascade": cascade_status,
         "whisper_model": cfg.get("audio", {}).get("whisper_model", "large-v3"),
         "presets": presets,
         "polish": {"progress_bar": cfg.get("polish", {}).get("progress_bar", True)},

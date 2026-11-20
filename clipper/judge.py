@@ -18,7 +18,16 @@ logger = logging.getLogger("clipper.judge")
 
 
 def is_ollama_available(endpoint: str = "http://localhost:11434", timeout: float = 2.0) -> Tuple[bool, List[str]]:
-    """Check if Ollama server is running at endpoint and list pulled models."""
+    """Check if LLM is available (Cloud Cascade or local Ollama)."""
+    from .llm_cascade import _get_api_key
+    cloud_models = []
+    if _get_api_key("GROQ_API_KEY"):
+        cloud_models.append("groq-qwen27b")
+    if _get_api_key("NVIDIA_API_KEY"):
+        cloud_models.append("nvidia-nemotron")
+    if _get_api_key("GEMINI_API_KEY"):
+        cloud_models.append("gemini-flash")
+
     tags_url = f"{endpoint.rstrip('/')}/api/tags"
     try:
         req = urllib.request.Request(tags_url, headers={"User-Agent": "StreamClipper/1.0"})
@@ -27,9 +36,11 @@ def is_ollama_available(endpoint: str = "http://localhost:11434", timeout: float
                 body = resp.read().decode("utf-8")
                 data = json.loads(body)
                 model_names = [m.get("name", "") for m in data.get("models", [])]
-                return True, model_names
+                return True, cloud_models + model_names
     except Exception:
         pass
+    if cloud_models:
+        return True, cloud_models
     return False, []
 
 
@@ -152,10 +163,17 @@ def call_ollama_generate(
     model: str = "qwen3:14b",
     timeout: float = 120.0,
 ) -> Optional[str]:
-    """Call Ollama /api/generate (JSON output, thinking off, model kept loaded between calls).
+    """Call LLM cascade (Groq Cloud -> NVIDIA Nemotron -> Gemini -> Local Ollama).
 
-    The model stays in VRAM for a couple of minutes so judging 30 moments is not 30 model loads;
-    rank_moments_with_llm unloads it when it is done (12GB VRAM rule)."""
+    Provides cloud-speed inference (<1s via Groq/NVIDIA) with graceful offline fallback."""
+    try:
+        from .llm_cascade import call_llm_cascade
+        cascade_res = call_llm_cascade(prompt, endpoint=endpoint, local_model=model, timeout=timeout)
+        if cascade_res:
+            return cascade_res
+    except Exception as e:
+        logger.warning(f"Cloud cascade invocation error: {e}")
+
     gen_url = f"{endpoint.rstrip('/')}/api/generate"
     llm_cfg = load_config().get("llm", {})
     keep_alive_cfg = llm_cfg.get("keep_alive_seconds", 180)

@@ -57,6 +57,11 @@ tests/test_scratch/
 tests/__pycache__/
 config/user_overrides.yaml
 
+# Environment & Secrets
+.env
+.env.*
+config/.env
+
 # Publish: logins and your private plan - never commit these
 config/tokens/
 config/youtube_client_secret.json

@@ -63,7 +63,12 @@ async function refreshSys() {
     const s = S.sys = await api("/api/system");
     $("#sys-gpu").textContent = s.gpu.ok ? s.gpu.name.replace(/NVIDIA GeForce |Laptop GPU/g, "").trim() : "not found";
     $("#sys-vram").style.width = s.gpu.ok ? (100 * s.gpu.mem_used / s.gpu.mem_total) + "%" : "0";
-    $("#sys-llm").innerHTML = !s.llm.enabled ? '<span class="muted">off</span>' : s.ollama.running ? `<span style="color:var(--ok)">${esc(s.llm.model)}</span>` : '<span style="color:var(--warn)">Ollama offline</span>';
+    const cas = s.cascade || {};
+    const prov = cas.active_provider || s.llm.model || "ready";
+    const shortProv = prov.includes("groq") ? "Groq 27B" : prov.includes("nvidia") ? "NVIDIA NIM" : prov.includes("gemini") ? "Gemini Flash" : prov;
+    $("#sys-llm").innerHTML = !s.llm.enabled
+      ? '<span class="muted">off</span>'
+      : `<span style="color:var(--ok)" title="Active AI Engine: ${esc(prov)}">⚡ ${esc(shortProv)}</span>`;
     $("#sys-whisper").textContent = s.whisper_model;
   } catch (e) {}
 }
@@ -813,7 +818,7 @@ async function renderLive(full = true, liveData = null) {
       case 'draining': return '<span class="chip warn">🔄 FINISHING BUFFER</span>';
       case 'paused': return '<span class="chip warn">⏸ PAUSED</span>';
       case 'waiting_network': return '<span class="chip bad">⚠️ NO INTERNET</span>';
-      case 'judging': return '<span class="chip hot">🧠 AI JUDGE (Qwen 14B)</span>';
+      case 'judging': return '<span class="chip hot">🧠 AI JUDGE (Cloud Cascade)</span>';
       case 'transcribing': return '<span class="chip warn">🎙️ TRANSCRIBING</span>';
       case 'rendering': return '<span class="chip ac">🎬 RENDERING 9:16</span>';
       case 'cutting': return '<span class="chip warn">✂️ EXTRACTING</span>';
@@ -1791,13 +1796,20 @@ async function renderSettings() {
   const models = s.ollama.models || [];
   const curSens = s.default_sensitivity || localStorage.getItem("clip_default_sens") || "Medium";
   const curLiveSens = s.live_sensitivity != null ? String(s.live_sensitivity) : (localStorage.getItem("clip_live_sens") || "2.2");
+  const cas = s.cascade || {};
   main.innerHTML = `
   <div class="head"><div><h1>Settings</h1><p>Saved to config/user_overrides.yaml. Your main config file is never rewritten.</p></div></div>
   <div class="grid2">
     <div class="card col" style="gap:16px">
-      <div class="row" style="justify-content:space-between"><div><b>AI judge</b><div class="muted small">A local model (Ollama) scores moments harshly and writes hook titles. Free, runs on your GPU after Whisper unloads.</div></div>
+      <div class="row" style="justify-content:space-between"><div><b>Cloud AI Cascade Judge</b><div class="muted small">Uses free ultra-fast cloud models (Groq LPU ~0.8s, NVIDIA Nemotron, Gemini) with seamless offline local GPU fallback.</div></div>
         <label class="switch"><input type="checkbox" id="s-llm" ${s.llm.enabled ? "checked" : ""}><span></span></label></div>
-      <div class="col"><span class="lbl">Model</span>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin:-4px 0 6px">
+        <span class="chip ${cas.providers_configured?.groq ? 'ok' : 'warn'}">⚡ Groq Cloud: ${cas.providers_configured?.groq ? 'Connected' : 'No key'}</span>
+        <span class="chip ${cas.providers_configured?.nvidia ? 'ok' : 'warn'}">🟢 NVIDIA NIM: ${cas.providers_configured?.nvidia ? 'Connected' : 'No key'}</span>
+        <span class="chip ${cas.providers_configured?.gemini ? 'ok' : 'warn'}">🔵 Google Gemini: ${cas.providers_configured?.gemini ? 'Connected' : 'No key'}</span>
+        <span class="chip ok">💻 Local GPU: Ready</span>
+      </div>
+      <div class="col"><span class="lbl">Offline Model (Ollama)</span>
         ${models.length ? `<select id="s-model">${models.map(m => `<option ${m === s.llm.model ? "selected" : ""}>${esc(m)}</option>`).join("")}</select>` : `<input type="text" id="s-model" value="${esc(s.llm.model)}">`}
         <span class="small ${s.ollama.running ? "" : "muted"}" style="${s.ollama.running ? "color:var(--ok)" : ""}">${s.ollama.running ? `Ollama running · ${models.length} model(s)` : "Ollama isn't running. Install it, then run: ollama pull " + esc(s.llm.model)}</span></div>
       <hr>
