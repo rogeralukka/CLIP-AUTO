@@ -14,6 +14,7 @@ const toast = (msg, err) => {
 };
 const fmt = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); };
 const media = (p, bust) => p ? `/media?path=${encodeURIComponent(p)}${bust ? "&t=" + bust : ""}` : "";
+const poster = (p, bust) => p ? media(p.replace(/\.[a-zA-Z0-9]+$/, ".jpg"), bust) : "";
 const platformOf = l => /twitch\.tv/.test(l) ? "Twitch" : /youtu/.test(l) ? "YouTube" : /kick\.com/.test(l) ? "Kick" : /^[a-z]:\\|^\//i.test(l) ? "Local file" : "Link";
 const SIG = { chat_rate: ["Chat speed", "#d7ff3a"], chat_keywords: ["Chat words", "#ff4f8b"], streamer_loudness: ["Loudness", "#5aa8ff"], speech_energy: ["Speech", "#ffb23a"], youtube_heatmap: ["Replays", "#b78cff"] };
 const STAGES = [["download", "Download"], ["transcribe", "Transcribe"], ["detect", "Find moments"], ["selection", "Review"], ["render", "Render"]];
@@ -374,7 +375,7 @@ function drawClips(job) {
     const qc = c.qc || {}; const qcCls = { PASS: "ok", WARN: "warn", FAIL: "bad" }[qc.status] || "";
     const p = c.platforms || {}; const lay0 = (c.layout || "gameplay").toLowerCase(); const lay = lay0 === "duo" ? "split" : lay0;
     return `<div class="clip ${c.status === "KEPT" ? "kept" : ""} ${c.status === "REJECTED" ? "rej" : ""} ${S.focus === n ? "focus" : ""}" data-i="${i}" data-n="${n}">
-      <div class="phone"><video src="${media(c.path, c.rendered_at || "")}#t=0.1" controls preload="metadata" playsinline></video>
+      <div class="phone"><video src="${media(c.path, c.rendered_at || "")}#t=0.001" poster="${poster(c.path, c.rendered_at || "")}" controls preload="metadata" playsinline></video>
         <div class="ov">${qc.status ? `<span class="chip ${qcCls}" title="${esc((qc.flags || []).join("\n"))}">QC ${qc.status}</span>` : ""}${c.is_flagged ? `<span class="chip bad" title="${esc((c.flagged_words || []).join(", "))}">Risk words</span>` : ""}${qc.possible_music ? `<span class="chip warn">Music?</span>` : ""}</div>
         ${c.busy ? `<div class="busy"><div class="spin"></div>Re-rendering…</div>` : ""}</div>
       <div class="body">
@@ -613,7 +614,7 @@ function libTiles(lib) {
   if (!lib.length) return `<div class="empty" style="grid-column:1/-1;padding:24px"><b>No clips yet</b>Render a stream in Studio, or drop files above.</div>`;
   const sorted = lib.slice().sort((a, b) => (a.used - b.used) || (b.kept - a.kept));
   return sorted.map(c => `<label class="lib-tile ${c.used ? "used" : ""} ${PUB.picks.has(c.path) ? "on" : ""}" title="${esc(c.name)}">
-      <video src="${media(c.path)}#t=0.1" preload="metadata" muted playsinline></video>
+      <video src="${media(c.path)}#t=0.001" poster="${poster(c.path)}" preload="metadata" muted playsinline></video>
       <input type="checkbox" data-pick="${esc(c.path)}" ${c.used ? "disabled" : ""} ${PUB.picks.has(c.path) ? "checked" : ""}>
       <span class="lt">${c.used ? "Already planned" : esc(c.title || c.name)}</span>${c.kept ? '<span class="chip ok lk">kept</span>' : ""}</label>`).join("");
 }
@@ -675,7 +676,7 @@ function postCard(p) {
   const plats = Object.entries(p.platforms || {});
   const openKey = PUB.open && PUB.open.startsWith(p.id + ":") ? PUB.open.split(":")[1] : null;
   return `<div class="pub-post" data-pid="${esc(p.id)}">
-    <video class="q-thumb" src="${media(p.clip_path)}#t=0.1" preload="metadata" muted playsinline></video>
+    <video class="q-thumb" src="${media(p.clip_path)}#t=0.001" poster="${poster(p.clip_path)}" preload="metadata" muted playsinline></video>
     <div class="col" style="gap:8px;min-width:0">
       <div class="row"><b class="ttl" style="max-width:340px">${esc(p.title)}</b><span class="chip ${ESTATUS[p.status] || ""}">${esc(p.status)}</span>
         <button class="btn sm" data-openall="${esc(p.id)}" title="Opens every site of this account in its Chrome profile and shows the file in Explorer">Open all sites + file</button>
@@ -950,7 +951,7 @@ async function renderLive(full = true, liveData = null) {
           <span class="small" style="color:var(--ac);font-weight:600;margin-top:8px">✓ AI Taste Preserved</span>
         </div>
       ` : `
-        <div class="phone"><video src="${media(c.path)}#t=0.1" controls preload="metadata"></video></div>
+        <div class="phone"><video src="${media(c.path)}#t=0.001" poster="${poster(c.path)}" controls preload="metadata" playsinline></video></div>
       `}
       <div class="body">
         <div class="row" style="gap:5px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
@@ -1916,4 +1917,11 @@ async function renderSettings() {
 
 /* ---------------- boot ---------------- */
 document.addEventListener("keydown", e => S.keys && ["review", "clips"].includes(S.route) && S.keys(e));
+document.addEventListener("play", e => {
+  if (e.target && e.target.tagName === "VIDEO") {
+    document.querySelectorAll("video").forEach(v => {
+      if (v !== e.target && !v.paused) v.pause();
+    });
+  }
+}, true);
 (async () => { await Promise.all([refresh(), refreshSys()]); route(); setInterval(refresh, 2000); setInterval(refreshSys, 10000); })();

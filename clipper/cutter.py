@@ -21,19 +21,20 @@ logger = logging.getLogger("clipper.cutter")
 def get_video_encoder_flags(use_cpu: bool = False, intermediate: bool = False) -> List[str]:
     """FFmpeg video encoder settings for NVENC (GPU) or libx264 (CPU).
 
-    Final clips use high-quality VBR (platforms re-compress uploads, so give them a clean
-    source). `intermediate` is for the temporary rough cut: near-lossless so the final
+    Final clips use high-quality VBR with +faststart for instant zero-buffering web playback.
+    `intermediate` is for the temporary rough cut: near-lossless so the final
     render doesn't stack a second round of compression on top.
     """
     if use_cpu:
         if intermediate:
             return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14"]
-        return ["-c:v", "libx264", "-preset", "medium", "-crf", "17", "-profile:v", "high"]
+        return ["-c:v", "libx264", "-preset", "medium", "-crf", "19", "-profile:v", "high",
+                "-movflags", "+faststart"]
     if intermediate:
         return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "15", "-b:v", "0"]
-    return ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19", "-b:v", "0",
-            "-maxrate", "25M", "-bufsize", "50M", "-profile:v", "high", "-spatial-aq", "1",
-            "-temporal-aq", "1", "-rc-lookahead", "32", "-bf", "3"]
+    return ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "21", "-b:v", "0",
+            "-maxrate", "12M", "-bufsize", "24M", "-profile:v", "high", "-spatial-aq", "1",
+            "-temporal-aq", "1", "-rc-lookahead", "32", "-bf", "3", "-movflags", "+faststart"]
 
 
 def get_loudnorm_audio_filter(
@@ -167,6 +168,7 @@ def attach_stream_audio(section_path: str, stream_audio: str, section_start: flo
         "-i", os.path.abspath(stream_audio),
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
         "-shortest", os.path.abspath(output_path),
     ]
     ret = run_tracked_command(cmd, job_id=job_id)
@@ -205,6 +207,7 @@ def cut_rough_clip(
         *encoder_flags,
         "-c:a", "aac",
         "-b:a", "192k",
+        "-movflags", "+faststart",
         os.path.abspath(output_path)
     ]
 
@@ -808,6 +811,17 @@ def render_vertical_clip(
                 progress_cb=progress_cb,
             )
         raise RuntimeError(f"FFmpeg vertical render failed: {e}")
+
+    # Generate high quality poster thumbnail for instant web previews without video buffering
+    poster_path = os.path.splitext(abs_out)[0] + ".jpg"
+    try:
+        poster_time = min(1.0, max(0.1, a_dur * 0.2)) if a_dur > 0 else 0.5
+        subprocess.run(
+            [ffmpeg_bin, "-y", "-ss", f"{poster_time:.2f}", "-i", abs_out, "-vframes", "1", "-q:v", "3", poster_path],
+            capture_output=True, timeout=10
+        )
+    except Exception:
+        pass
 
     check_cancelled_or_paused(job_id)
     return abs_out

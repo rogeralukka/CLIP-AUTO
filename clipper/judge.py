@@ -17,8 +17,16 @@ from .transcription import get_transcript_text_in_window, unload_whisper_model
 logger = logging.getLogger("clipper.judge")
 
 
-def is_ollama_available(endpoint: str = "http://localhost:11434", timeout: float = 2.0) -> Tuple[bool, List[str]]:
+_last_ollama_cache = {"time": 0.0, "endpoint": "", "res": (False, [])}
+
+
+def is_ollama_available(endpoint: str = "http://127.0.0.1:11434", timeout: float = 2.0) -> Tuple[bool, List[str]]:
     """Check if LLM is available (Cloud Cascade or local Ollama)."""
+    endpoint = endpoint.replace("://localhost", "://127.0.0.1")
+    now = time.time()
+    if now - _last_ollama_cache["time"] < 3.0 and _last_ollama_cache["endpoint"] == endpoint:
+        return _last_ollama_cache["res"]
+
     from .llm_cascade import _get_api_key
     cloud_models = []
     if _get_api_key("GROQ_API_KEY"):
@@ -29,6 +37,7 @@ def is_ollama_available(endpoint: str = "http://localhost:11434", timeout: float
         cloud_models.append("gemini-flash")
 
     tags_url = f"{endpoint.rstrip('/')}/api/tags"
+    res = (False, cloud_models) if cloud_models else (False, [])
     try:
         req = urllib.request.Request(tags_url, headers={"User-Agent": "StreamClipper/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -36,12 +45,13 @@ def is_ollama_available(endpoint: str = "http://localhost:11434", timeout: float
                 body = resp.read().decode("utf-8")
                 data = json.loads(body)
                 model_names = [m.get("name", "") for m in data.get("models", [])]
-                return True, cloud_models + model_names
+                res = (True, cloud_models + model_names)
     except Exception:
         pass
-    if cloud_models:
-        return True, cloud_models
-    return False, []
+    _last_ollama_cache["time"] = now
+    _last_ollama_cache["endpoint"] = endpoint
+    _last_ollama_cache["res"] = res
+    return res
 
 
 def validate_judge_response(raw_text: str) -> Optional[Dict[str, Any]]:
@@ -117,10 +127,11 @@ def find_ollama_exe() -> Optional[str]:
     return None
 
 
-def ensure_ollama_running(endpoint: str = "http://localhost:11434", wait_seconds: float = 20.0) -> bool:
+def ensure_ollama_running(endpoint: str = "http://127.0.0.1:11434", wait_seconds: float = 20.0) -> bool:
     """Start the Ollama server in the background when it is not running (no window).
 
     Returns True when it answers. Never raises: no Ollama installed just means no AI judge."""
+    endpoint = endpoint.replace("://localhost", "://127.0.0.1")
     ok, _ = is_ollama_available(endpoint)
     if ok:
         return True
@@ -148,6 +159,7 @@ def ensure_ollama_running(endpoint: str = "http://localhost:11434", wait_seconds
 
 def unload_ollama_model(endpoint: str, model: str) -> None:
     """Free the GPU right away (Whisper and the video render need the VRAM)."""
+    endpoint = endpoint.replace("://localhost", "://127.0.0.1")
     try:
         payload = json.dumps({"model": model, "keep_alive": 0}).encode("utf-8")
         req = urllib.request.Request(f"{endpoint.rstrip('/')}/api/generate", data=payload,
@@ -159,13 +171,14 @@ def unload_ollama_model(endpoint: str, model: str) -> None:
 
 def call_ollama_generate(
     prompt: str,
-    endpoint: str = "http://localhost:11434",
+    endpoint: str = "http://127.0.0.1:11434",
     model: str = "qwen3:14b",
     timeout: float = 120.0,
 ) -> Optional[str]:
     """Call LLM cascade (Groq Cloud -> NVIDIA Nemotron -> Gemini -> Local Ollama).
 
     Provides cloud-speed inference (<1s via Groq/NVIDIA) with graceful offline fallback."""
+    endpoint = endpoint.replace("://localhost", "://127.0.0.1")
     try:
         from .llm_cascade import call_llm_cascade
         cascade_res = call_llm_cascade(prompt, endpoint=endpoint, local_model=model, timeout=timeout, preferred_model=model)

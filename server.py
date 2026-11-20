@@ -163,15 +163,24 @@ def _job(job_id: str) -> Dict[str, Any]:
     return job
 
 
+_last_gpu_cache = {"time": 0.0, "data": {"ok": False}}
+
+
 def _gpu_status() -> Dict[str, Any]:
+    now = time.time()
+    if now - _last_gpu_cache["time"] < 3.0:
+        return _last_gpu_cache["data"]
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.used,memory.total,utilization.gpu",
              "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=3)
         name, used, total, util = [x.strip() for x in out.stdout.strip().splitlines()[0].split(",")]
-        return {"ok": True, "name": name, "mem_used": int(used), "mem_total": int(total), "util": int(util)}
+        res = {"ok": True, "name": name, "mem_used": int(used), "mem_total": int(total), "util": int(util)}
     except Exception:
-        return {"ok": False}
+        res = {"ok": False}
+    _last_gpu_cache["time"] = now
+    _last_gpu_cache["data"] = res
+    return res
 
 
 # ----------------------------------------------------------------- pages
@@ -192,13 +201,21 @@ def index():
 app.mount("/static", StaticFiles(directory=os.path.join(ROOT, "web")), name="static")
 
 
+class MediaFileResponse(FileResponse):
+    chunk_size = 512 * 1024  # 512 KB chunks for high-throughput video streaming
+
+
 @app.get("/media")
-def media(path: str):
+async def media(path: str):
     """Serve a local clip/audio file to the browser (only from the project's own folders)."""
     full = os.path.abspath(path if os.path.isabs(path) else os.path.join(ROOT, path))
     if not any(full.startswith(d + os.sep) for d in MEDIA_DIRS) or not os.path.isfile(full):
         raise HTTPException(404, "Not found")
-    return FileResponse(full)
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=86400",
+    }
+    return MediaFileResponse(full, headers=headers)
 
 
 # ----------------------------------------------------------------- system
