@@ -1238,8 +1238,17 @@ async function renderLive(full = true, liveData = null) {
         const stopBtn = e.target.closest("[data-stop]");
         if (stopBtn) {
           if (!confirm("Stop monitoring this live stream? Buffer and clips are kept safely.")) return;
-          await api("/api/live/" + stopBtn.dataset.stop, { method: "DELETE" });
-          renderLive(true);
+          const sid = stopBtn.dataset.stop;
+          try {
+            await api("/api/live/" + sid, { method: "DELETE" });
+            toast("Monitoring stopped · Recording buffer & clips safely kept ✓");
+            if (S.live && S.live.sessions) {
+              S.live.sessions = S.live.sessions.filter(s => String(s.id) !== String(sid));
+            }
+            await renderLive(true);
+          } catch (err) {
+            toast(err.message, true);
+          }
           return;
         }
       };

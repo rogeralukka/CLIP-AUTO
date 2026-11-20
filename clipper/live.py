@@ -238,6 +238,7 @@ class LiveStreamClipper:
                     "buffer_seconds": round(self.buffer_seconds, 2),
                     "buffer_mb": round(self.buffer_mb, 2),
                     "is_paused": self.is_paused,
+                    "is_stopped": (self.status == "stopped"),
                     "status": self.status,
                     "activity": self.activity,
                     "clips_done": self.clips_done,

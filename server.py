@@ -91,7 +91,7 @@ def _restore_active_sessions():
     from clipper.live import LiveStreamClipper
     restored_urls = set()
 
-    # 1. Restore from ACTIVE_SESSIONS_FILE
+    # 1. Restore only intentionally active sessions from ACTIVE_SESSIONS_FILE
     if os.path.isfile(ACTIVE_SESSIONS_FILE):
         try:
             with open(ACTIVE_SESSIONS_FILE, "r", encoding="utf-8") as f:
@@ -108,6 +108,9 @@ def _restore_active_sessions():
                     campaign=camp,
                     sensitivity=float(item.get("sensitivity") or 2.0),
                 )
+                # Never resurrect sessions marked stopped or completed
+                if getattr(lc, "status", "") in ("stopped", "completed"):
+                    continue
                 t = None
                 if not lc.is_paused:
                     t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
@@ -118,23 +121,30 @@ def _restore_active_sessions():
         except Exception:
             pass
 
-    # 2. Discover any existing buffered streams with state.json
-    for state_path in glob.glob(os.path.join(ROOT, "downloads", "live_buffer", "*", "state.json")):
-        try:
-            with open(state_path, "r", encoding="utf-8") as f:
-                st_data = json.load(f)
-            url = st_data.get("stream_url")
-            if url and url not in restored_urls:
-                lc = LiveStreamClipper(stream_url=url, quality=st_data.get("quality"))
-                t = None
-                if not lc.is_paused:
-                    t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
-                    t.start()
-                sid = f"saved_{re.sub(r'[^a-zA-Z0-9_]', '', lc.stream_id)[:10]}"
-                _live_sessions[sid] = {"url": url, "clipper": lc, "thread": t, "started": time.strftime("%H:%M")}
-                restored_urls.add(url)
-        except Exception:
-            pass
+    # 2. Only inspect state.json if ACTIVE_SESSIONS_FILE is missing/empty (crash recovery)
+    # AND strictly ignore any sessions that are stopped, completed, or marked inactive!
+    if not restored_urls and (not os.path.isfile(ACTIVE_SESSIONS_FILE) or os.path.getsize(ACTIVE_SESSIONS_FILE) < 5):
+        for state_path in glob.glob(os.path.join(ROOT, "downloads", "live_buffer", "*", "state.json")):
+            try:
+                with open(state_path, "r", encoding="utf-8") as f:
+                    st_data = json.load(f)
+                status = st_data.get("status", "")
+                if status in ("stopped", "completed") or st_data.get("is_stopped") or st_data.get("is_active") is False:
+                    continue
+                url = st_data.get("stream_url")
+                if url and url not in restored_urls:
+                    lc = LiveStreamClipper(stream_url=url, quality=st_data.get("quality"))
+                    if getattr(lc, "status", "") in ("stopped", "completed"):
+                        continue
+                    t = None
+                    if not lc.is_paused:
+                        t = threading.Thread(target=lc.run_loop, daemon=True, name=f"live-{lc.stream_id}")
+                        t.start()
+                    sid = f"saved_{re.sub(r'[^a-zA-Z0-9_]', '', lc.stream_id)[:10]}"
+                    _live_sessions[sid] = {"url": url, "clipper": lc, "thread": t, "started": time.strftime("%H:%M")}
+                    restored_urls.add(url)
+            except Exception:
+                pass
 
 
 @app.on_event("startup")
@@ -613,9 +623,19 @@ def live_set_sensitivity(body: LiveSensIn):
 @app.post("/api/live")
 def live_start(body: LiveIn):
     from clipper.live import LiveStreamClipper
+    target_url = body.url.strip()
+
+    # Prevent duplicate live sessions if already running
+    for existing_sid, s in list(_live_sessions.items()):
+        if s.get("url", "").strip() == target_url:
+            c = s.get("clipper")
+            t = s.get("thread")
+            if c and (t and t.is_alive() or not getattr(c, "is_paused", False)):
+                return {"id": existing_sid, "existing": True}
+
     camp = load_campaign(body.campaign_id) if body.campaign_id else None
     lc = LiveStreamClipper(
-        stream_url=body.url.strip(),
+        stream_url=target_url,
         quality=body.quality or "data_saver",
         preset_name=body.preset or "classic_yellow",
         campaign=camp,
@@ -625,7 +645,7 @@ def live_start(body: LiveIn):
     t.start()
     clean_sid = re.sub(r"[^a-zA-Z0-9_]", "", lc.stream_id)[:10]
     sid = f"{int(time.time())}_{clean_sid}"
-    _live_sessions[sid] = {"url": body.url, "clipper": lc, "thread": t, "started": time.strftime("%H:%M")}
+    _live_sessions[sid] = {"url": target_url, "clipper": lc, "thread": t, "started": time.strftime("%H:%M")}
     _save_active_sessions()
     return {"id": sid}
 
@@ -633,8 +653,30 @@ def live_start(body: LiveIn):
 @app.delete("/api/live/{sid}")
 def live_stop(sid: str):
     s = _live_sessions.pop(sid, None)
+    # If not found directly by sid, check by stream_id or url
+    if not s:
+        for k, v in list(_live_sessions.items()):
+            c = v.get("clipper")
+            if k == sid or (c and getattr(c, "stream_id", None) == sid) or v.get("url") == sid:
+                s = _live_sessions.pop(k, None)
+                break
+
     if s:
-        s["clipper"].stop()
+        c = s.get("clipper")
+        if c:
+            c.stop()
+            try:
+                if hasattr(c, "state_file") and os.path.isfile(c.state_file):
+                    with open(c.state_file, "r", encoding="utf-8") as f:
+                        st = json.load(f)
+                    st["status"] = "stopped"
+                    st["is_active"] = False
+                    st["is_stopped"] = True
+                    st["activity"] = "Capture stopped by user."
+                    with open(c.state_file, "w", encoding="utf-8") as f:
+                        json.dump(st, f, indent=2)
+            except Exception:
+                pass
     _save_active_sessions()
     return {"ok": True}
 
