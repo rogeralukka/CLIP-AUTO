@@ -59,7 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "progress_bar_color": "yellow",
         "hook_duration_seconds": 2.5,
         "punch_zoom": {
-            "enabled": True,
+            "enabled": False,
             "factor": 1.12,
         },
         "loudnorm": {
@@ -70,9 +70,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
         "silence": {
             "trim_breath_seconds": 0.3,
-            "remove_internal_dead_air": True,
-            "dead_air_min_gap_seconds": 0.40,
-            "dead_air_target_gap_seconds": 0.15,
+            "remove_internal_dead_air": False,
+            "dead_air_min_gap_seconds": 4.0,
+            "dead_air_target_gap_seconds": 1.0,
         },
     },
     "qc": {

@@ -62,7 +62,7 @@ polish:
   progress_bar_color: "yellow"
   hook_duration_seconds: 2.5
   punch_zoom:
-    enabled: true
+    enabled: false               # Disabled: keep clips smooth and natural without abrupt crop jumps
     factor: 1.12                 # Subtle punch-zoom (1.10x - 1.15x) on punchline climax
   enhance: "light"               # light denoise + sharpen on every clip ("off" to disable)
   ai_upscale_cams: "auto"        # AI-sharpen small cam crops with Real-ESRGAN when installed (setup_upscaler.ps1); "off" to disable
@@ -77,9 +77,9 @@ polish:
     target_lra: 11.0
   silence:
     trim_breath_seconds: 0.3
-    remove_internal_dead_air: true
-    dead_air_min_gap_seconds: 0.40 # Gaps over 0.4s shrink to 0.15s with retimed captions
-    dead_air_target_gap_seconds: 0.15
+    remove_internal_dead_air: false # DISABLED: Stream clips are continuous narrative cuts (never chop internal pauses)
+    dead_air_min_gap_seconds: 4.0   # Only trim prolonged dead air > 4.0s if explicitly enabled
+    dead_air_target_gap_seconds: 1.0
 
 qc:
   min_clip_length: 30.0          # Strict minimum clip length verification (seconds)

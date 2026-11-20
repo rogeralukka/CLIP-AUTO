@@ -461,7 +461,7 @@ def render_pipeline_moments(
 
         # Dead-air trimming: shrink gaps > 0.4s down to 0.15s and retime captions
         silence_cfg = cfg.get("polish", {}).get("silence", {})
-        if silence_cfg.get("remove_internal_dead_air", True) and len(words) > 1:
+        if silence_cfg.get("remove_internal_dead_air", False) and len(words) > 1:
             from .cutter import compress_internal_dead_air
             min_g = float(silence_cfg.get("dead_air_min_gap_seconds", 0.40))
             tgt_g = float(silence_cfg.get("dead_air_target_gap_seconds", 0.15))
