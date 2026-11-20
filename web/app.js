@@ -487,6 +487,8 @@ function updateClipsLive() {
   const jobs = clipJobs();
   const job = jobs.find(j => j.id === S.arg);
   if (!job) { if (jobs.length && !document.activeElement.matches("input")) renderClips(); return; }
+  const activeVid = $("#cliplist video:not([paused])");
+  if (activeVid && !activeVid.ended) return; // Keep playback uninterrupted
   const sig = job.status + "|" + (job.clips || []).length + "|" + (job.clips || []).map(c => `${c.busy}|${c.rendered_at}|${c.status}|${c.path}`).join(",");
   if (sig !== lastClipSig && !document.activeElement.matches("input")) renderClipsKeepScroll();
   lastClipSig = sig;
@@ -1077,6 +1079,9 @@ async function renderLive(full = true, liveData = null) {
     const emptyEl = clipsBox.querySelector(".empty");
     if (emptyEl) emptyEl.remove();
 
+    // Preserve scroll position of main scroll container
+    const prevScrollTop = main ? main.scrollTop : 0;
+
     const existingCardMap = new Map();
     clipsBox.querySelectorAll(".clip[data-fn]").forEach(el => {
       existingCardMap.set(el.dataset.fn, el);
@@ -1084,20 +1089,30 @@ async function renderLive(full = true, liveData = null) {
 
     const newFnSet = new Set(clips.map(c => c.filename));
     existingCardMap.forEach((el, fn) => {
-      if (!newFnSet.has(fn)) el.remove();
+      if (!newFnSet.has(fn)) {
+        const v = el.querySelector("video");
+        if (!v || v.paused || v.ended) {
+          el.remove();
+        }
+      }
     });
 
     // Reconcile and enforce strict descending chronological order without recreating or reloading existing <video> elements
-    clips.forEach(c => {
+    clips.forEach((c, targetIndex) => {
       let card = existingCardMap.get(c.filename);
       if (!card) {
         const temp = document.createElement("div");
         temp.innerHTML = renderSingleClipHtml(c);
         card = temp.firstElementChild;
         existingCardMap.set(c.filename, card);
+        const refNode = clipsBox.children[targetIndex] || null;
+        clipsBox.insertBefore(card, refNode);
       } else {
+        const v = card.querySelector("video");
+        const isPlaying = card.classList.contains("is-playing") || (v && !v.paused && !v.ended);
+
         const starRating = card.querySelector(".star-rating");
-        if (starRating) {
+        if (starRating && !card.matches(":hover")) {
           const uRating = c.user_rating || 0;
           starRating.querySelectorAll(".star-btn").forEach(s => {
             const sVal = parseInt(s.dataset.star, 10);
@@ -1106,9 +1121,11 @@ async function renderLive(full = true, liveData = null) {
           const valEl = starRating.querySelector(".rating-val");
           if (valEl) valEl.textContent = uRating ? uRating + '/5' : 'Rate';
         }
-        card.querySelectorAll(".fchip").forEach(fchip => {
-          fchip.classList.toggle("on", fchip.dataset.tag === (c.user_tag || ""));
-        });
+        if (!card.matches(":hover")) {
+          card.querySelectorAll(".fchip").forEach(fchip => {
+            fchip.classList.toggle("on", fchip.dataset.tag === (c.user_tag || ""));
+          });
+        }
         if (c.media_deleted && !card.dataset.deleted) {
           card.dataset.deleted = "true";
           const phone = card.querySelector(".phone");
@@ -1128,10 +1145,20 @@ async function renderLive(full = true, liveData = null) {
               <button class="btn sm danger" data-delclip="${esc(c.filename)}" data-purge="true" title="Remove this card from view">Remove Card ✕</button>`;
           }
         }
+
+        // Position check: ONLY move the DOM node if it is not already at targetIndex!
+        // NEVER move a card whose video is actively playing!
+        const currentChildAtTarget = clipsBox.children[targetIndex];
+        if (currentChildAtTarget !== card && !isPlaying) {
+          clipsBox.insertBefore(card, currentChildAtTarget || null);
+        }
       }
-      // appendChild moves existing DOM node to exact sorted position without interrupting <video> playback
-      clipsBox.appendChild(card);
     });
+
+    // Lock scroll position so live polling never forces scroll jump
+    if (main && prevScrollTop > 0 && Math.abs(main.scrollTop - prevScrollTop) > 2) {
+      main.scrollTop = prevScrollTop;
+    }
 
     const badge = $("#live-clip-count-badge");
     if (badge) badge.textContent = `${clips.length} Clips`;
@@ -1140,6 +1167,39 @@ async function renderLive(full = true, liveData = null) {
   const setupDelegatedListeners = () => {
     const sessionsBox = $("#live-sessions-box");
     const clipsBox = $("#live-clips-box");
+
+    if (clipsBox) {
+      // Manage single active video playback and prevent video interruption
+      clipsBox.addEventListener("play", (e) => {
+        const vid = e.target;
+        if (vid && vid.tagName === "VIDEO") {
+          clipsBox.querySelectorAll("video").forEach(other => {
+            if (other !== vid && !other.paused) other.pause();
+          });
+          const card = vid.closest(".clip");
+          if (card) {
+            clipsBox.querySelectorAll(".clip.is-playing").forEach(c => c.classList.remove("is-playing"));
+            card.classList.add("is-playing");
+          }
+        }
+      }, true);
+
+      clipsBox.addEventListener("pause", (e) => {
+        const vid = e.target;
+        if (vid && vid.tagName === "VIDEO") {
+          const card = vid.closest(".clip");
+          if (card) card.classList.remove("is-playing");
+        }
+      }, true);
+
+      clipsBox.addEventListener("ended", (e) => {
+        const vid = e.target;
+        if (vid && vid.tagName === "VIDEO") {
+          const card = vid.closest(".clip");
+          if (card) card.classList.remove("is-playing");
+        }
+      }, true);
+    }
 
     if (sessionsBox) {
       sessionsBox.onclick = async (e) => {

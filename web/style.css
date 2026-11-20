@@ -32,7 +32,7 @@ nav em.hot{background:var(--hot);color:#fff}
 .meter{height:4px;background:var(--s3);border-radius:4px;margin:4px 0 6px;overflow:hidden}.meter div{height:100%;width:0;background:var(--ac);transition:.4s}
 
 /* layout */
-main{flex:1;overflow:auto;padding:28px 36px 80px}
+main{flex:1;overflow:auto;padding:28px 36px 80px;overflow-anchor:none}
 .head{display:flex;align-items:flex-end;gap:16px;margin-bottom:22px;flex-wrap:wrap}
 .head h1{font-size:24px;letter-spacing:-.02em;font-weight:700}
 .head p{color:var(--mu);margin-top:3px}
@@ -118,8 +118,9 @@ textarea{resize:vertical;min-height:120px;font-family:var(--mono);font-size:13px
 
 /* clips */
 .tabs{display:flex;gap:6px;flex-wrap:wrap}
-.clips{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px}
+.clips{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px;overflow-anchor:none}
 .clip{background:var(--s1);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;transition:.15s}
+.clip.is-playing{border-color:var(--ac);box-shadow:0 0 16px rgba(215,255,58,0.25)}
 .clip.focus{box-shadow:0 0 0 2px var(--ac)}
 .clip.kept{border-color:#3ddc8466}.clip.rej{opacity:.5}
 .phone{position:relative;aspect-ratio:9/16;background:#000;max-height:560px}

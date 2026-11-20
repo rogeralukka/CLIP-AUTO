@@ -482,6 +482,15 @@ def _get_clip_creation_time(meta_path: str, meta_data: Optional[Dict[str, Any]] 
         except (ValueError, TypeError):
             pass
 
+    if meta_data is None and os.path.isfile(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if d.get("created_at"):
+                return float(d["created_at"])
+        except Exception:
+            pass
+
     # Check the mp4 file's modification time (mp4 is never written to on rating/feedback)
     mp4_path = meta_path.replace("_metadata.json", ".mp4")
     if os.path.isfile(mp4_path):
@@ -571,7 +580,7 @@ def live_status():
                         loaded_clips.append(c_data)
                 except Exception:
                     pass
-            loaded_clips.sort(key=lambda c: float(c.get("created_at") or 0.0), reverse=True)
+            loaded_clips.sort(key=lambda c: (float(c.get("created_at") or 0.0), c.get("filename") or ""), reverse=True)
             _live_clips_cache = loaded_clips
             _live_clips_cache_time = now
             clips = loaded_clips
@@ -745,6 +754,8 @@ def live_delete_clip(filename: str, purge: bool = False):
     # 3. If not purged, update lightweight metadata JSON to reflect media deletion
     if not purge and meta and meta_path and os.path.isfile(meta_path):
         try:
+            if not meta.get("created_at"):
+                meta["created_at"] = _get_clip_creation_time(meta_path, meta)
             meta["media_deleted"] = True
             meta["freed_mb"] = freed_mb
             meta["path"] = ""
@@ -804,6 +815,8 @@ def clip_feedback(body: ClipFeedbackIn):
         try:
             with open(f, "r", encoding="utf-8") as fp:
                 meta = json.load(fp)
+            if not meta.get("created_at"):
+                meta["created_at"] = _get_clip_creation_time(f, meta)
             if body.rating > 0:
                 meta["user_rating"] = body.rating
             if body.tag is not None:
