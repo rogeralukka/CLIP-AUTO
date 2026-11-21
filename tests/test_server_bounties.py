@@ -20,6 +20,12 @@ class TestServerBounties(unittest.TestCase):
     def tearDown(self):
         bounties.BOUNTIES_FILE = self.orig_bounties_file
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        # the import step writes a real campaign preset; don't leave it behind
+        from clipper.campaigns import delete_campaign
+        try:
+            delete_campaign("test_bounty_1")
+        except Exception:
+            pass
 
     def test_bounties_endpoints(self):
         # 1. GET /api/bounties

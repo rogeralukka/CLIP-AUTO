@@ -10,11 +10,11 @@ hearing:
   vad: "silero"                 # snakers4/silero-vad (v5)
   audio_tagger: "panns"         # qiuqiangkong/audioset_tagging_cnn (CNN14)
   music_mood: "clap"            # laion/clap-htsat-unfused
-  diarizer: "speechbrain"       # speechbrain/spkrec-ecapa-voxceleb (or pyannote with HF_TOKEN)
+  diarizer: "pyannote"          # pyannote/speaker-diarization-3.1 (needs HF_TOKEN in .env); "speechbrain" = ECAPA+clustering alternative
   embedder: "ecapa"             # speechbrain/spkrec-ecapa-voxceleb
   transcriber: "faster-whisper" # Systran/faster-whisper-large-v3-turbo
   emotion: "emotion2vec"        # emotion2vec/emotion2vec_plus_base
-  prosody: "dsp"                # Deterministic F0 pitch & RMS loudness dynamics
+  prosody: "yin"                # clipper/hearing/prosody.py: speech-only YIN pitch + RMS, relative to each speaker
   llm_narrative: "qwen3:14b"    # Ollama qwen3:14b / qwen2.5:7b
 
 sight:

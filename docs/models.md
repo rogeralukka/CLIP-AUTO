@@ -18,8 +18,8 @@ In accordance with **Rule R1** and **Rule R3**, all licenses are verified direct
 | **H3/H4: Speaker Diarization / Linking** | ECAPA-TDNN | `speechbrain/spkrec-ecapa-voxceleb` | ~80 MB | Apache 2.0 | Yes | **496.0 MB** reserved (457.6 MB alloc) | **0.20s** (152.1x real-time) |
 | **H6: Transcription** | faster-whisper turbo | `Systran/faster-whisper-large-v3-turbo` | ~1.6 GB | MIT / Apache 2.0 | Yes | **1.6 GB** (CTranslate2 pool) | **1.51s** (19.8x real-time) |
 | **H7: Speech Emotion** | emotion2vec+ base | `iic/emotion2vec_plus_base` | ~360 MB | Apache 2.0 | Yes | **1,266.0 MB** reserved (1021.2 MB alloc) | **0.55s** (54.8x real-time) |
-| **H7: Prosody Dynamics** | DSP F0 & Energy | Deterministic DSP (pyin F0 + RMS) | 0 MB | BSD-3-Clause | Yes | **0.0 MB** (CPU DSP) | **11.12s** (2.7x real-time) |
-| **H8: Narrative & Grouping** | Qwen 2.5 7B / 14B | Local Ollama (`qwen3:14b` / `qwen2.5:7b`) | ~4.7 - 9.3 GB | Apache 2.0 | Yes | **4.7 - 9.3 GB** (Ollama offload) | **~35 tok/s** |
+| **H7: Prosody Dynamics** | DSP F0 & Energy | Speech-only YIN F0 + RMS (`clipper/hearing/prosody.py`) | 0 MB | BSD-3-Clause (librosa) | Yes | **0.0 MB** (CPU DSP) | *Re-measure on Omen.* Old whole-file pyin: 11.12s (2.7x). In the sandbox YIN was ~38x faster than pyin on the same audio, and only speech spans are analysed |
+| **H8: Narrative & Grouping** | Qwen 2.5 7B / 14B | Local Ollama (`qwen3:14b` / `qwen2.5:7b`) | ~4.7 - 9.3 GB | Apache 2.0 | Yes | *Not measured yet* | *Not measured yet - run `python -m clipper.benchmarks.llm_window <stream audio> --start 01:00:00 --minutes 3`* |
 | **M2: Face & Landmarks** | YuNet | `opencv/opencv_zoo` (`face_detection_yunet_2023mar.onnx`) | 395 KB | Apache 2.0 | Yes | **0.0 MB** (CPU / DNN) | **5.63s** / 60 frames (5.3x real-time) |
 | **M2: Face Verification** | SFace | `opencv/opencv_zoo` (`face_recognition_sface_2021dec.onnx`) | 37.4 MB | Apache 2.0 | Yes | **0.0 MB** (CPU / DNN) | **0.37s** / 60 crops (80.0x real-time) |
 | **M2: Person Detector** | RT-DETR-R18 | `PekingU/rtdetr_r18vd` (clean non-AGPL) | ~80 MB | Apache 2.0 | Yes | **2,172.0 MB** reserved (1142.6 MB alloc) | **4.46s** / 60 frames (6.7x real-time) |

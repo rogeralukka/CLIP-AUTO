@@ -284,17 +284,17 @@ def load_dsp():
     return True
 
 def infer_dsp(_):
-    # F0 tracking using librosa pyin and RMS energy
-    f0, voiced_flag, voiced_probs = librosa.pyin(
-        raw_audio,
-        fmin=librosa.note_to_hz('C2'),
-        fmax=librosa.note_to_hz('C7'),
-        sr=sr
-    )
-    rms = librosa.feature.rms(y=raw_audio)[0]
-    return f"F0 frames: {len(f0)}, RMS frames: {len(rms)}, voiced ratio: {np.mean(voiced_flag):.2f}"
+    # Speech-only YIN pitch + RMS (clipper/hearing/prosody.py). Uses Silero-style speech spans
+    # if available; on the 30 s sample we treat the whole clip as one span per second so the
+    # number is a worst case (all speech).
+    from clipper.hearing.prosody import analyse
+    y = raw_audio if raw_audio.ndim == 1 else raw_audio.mean(axis=1)
+    spans = [(t, min(t + 1.0, duration_s)) for t in np.arange(0, duration_s, 1.0)]
+    items = analyse(y.astype(np.float32), sr, spans)
+    voiced = float(np.mean([i.voiced_ratio for i in items])) if items else 0.0
+    return f"segments: {len(items)}, mean voiced ratio: {voiced:.2f}"
 
-benchmark_model("H7: Prosody Dynamics", "Deterministic DSP (pyin F0 + RMS)", load_dsp, infer_dsp)
+benchmark_model("H7: Prosody Dynamics", "Speech-only YIN F0 + RMS (hearing/prosody.py)", load_dsp, infer_dsp)
 
 # 9. M2 Face Detection & Landmarks: YuNet
 def load_yunet():
