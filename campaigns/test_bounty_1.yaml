@@ -1,0 +1,37 @@
+name: Test Kick Streamer Bounty
+streamer: Streamer Pro
+platform: twitch
+min_clip_length: 15
+max_clip_length: 60
+preset: classic_yellow
+overlay: null
+required_hashtags:
+- '#test'
+- '#stream'
+required_disclosure: ''
+allowed_upload_platforms:
+- tiktok
+- youtube
+- instagram
+rules_note: "Bounty: Test Kick Streamer Bounty (Custom / Discord)\nPayout: $3.00 CPM\n\
+  Link: \n\n"
+risk_words:
+- leak
+- leaked
+- spoiler
+- spoilers
+- banned
+- dmca
+- copyright
+- slur
+- n-word
+- scam
+- cheat
+- hack
+- dox
+- doxxed
+- address
+assigned_account_id: acc_main
+bounty_url: ''
+payout: $3.00 CPM
+bounty_source: discord

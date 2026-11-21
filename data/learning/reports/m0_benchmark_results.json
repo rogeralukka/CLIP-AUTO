@@ -1,0 +1,138 @@
+{
+  "device": "NVIDIA GeForce RTX 5070 Ti Laptop GPU",
+  "total_vram_mb": 12199.4375,
+  "sample_audio": "data/learning/benchmark_30s.wav",
+  "sample_video": "data/learning/benchmark_30s.mp4",
+  "results": [
+    {
+      "slot": "H1: Stem Separation",
+      "model": "Hybrid Transformer Demucs (htdemucs)",
+      "status": "PASSED",
+      "load_time_s": 1.94,
+      "infer_time_s": 1.85,
+      "speed_x_realtime": 16.3,
+      "peak_alloc_vram_mb": 608.2,
+      "peak_reserved_vram_mb": 804.0
+    },
+    {
+      "slot": "H1: Voice Activity",
+      "model": "Silero VAD v5",
+      "status": "PASSED",
+      "load_time_s": 0.38,
+      "infer_time_s": 1.67,
+      "speed_x_realtime": 18.0,
+      "peak_alloc_vram_mb": 35.9,
+      "peak_reserved_vram_mb": 56.0
+    },
+    {
+      "slot": "H2: AudioSet Tagger",
+      "model": "PANNs CNN14",
+      "status": "PASSED",
+      "load_time_s": 4.77,
+      "infer_time_s": 0.66,
+      "speed_x_realtime": 45.6,
+      "peak_alloc_vram_mb": 464.8,
+      "peak_reserved_vram_mb": 792.0
+    },
+    {
+      "slot": "H2: Music Mood / Audio Embed",
+      "model": "LAION-CLAP (clap-htsat-unfused)",
+      "status": "PASSED",
+      "load_time_s": 11.13,
+      "infer_time_s": 0.67,
+      "speed_x_realtime": 44.5,
+      "peak_alloc_vram_mb": 651.0,
+      "peak_reserved_vram_mb": 706.0
+    },
+    {
+      "slot": "H4: Speaker Embedding",
+      "model": "ECAPA-TDNN (VoxCeleb)",
+      "status": "PASSED",
+      "load_time_s": 4.17,
+      "infer_time_s": 0.2,
+      "speed_x_realtime": 152.1,
+      "peak_alloc_vram_mb": 457.6,
+      "peak_reserved_vram_mb": 496.0
+    },
+    {
+      "slot": "H6: Transcription",
+      "model": "faster-whisper large-v3-turbo",
+      "status": "PASSED",
+      "load_time_s": 4.01,
+      "infer_time_s": 1.51,
+      "speed_x_realtime": 19.8,
+      "peak_alloc_vram_mb": 0.0,
+      "peak_reserved_vram_mb": 0.0
+    },
+    {
+      "slot": "H7: Speech Emotion",
+      "model": "emotion2vec+ base",
+      "status": "PASSED",
+      "load_time_s": 9.42,
+      "infer_time_s": 0.55,
+      "speed_x_realtime": 54.8,
+      "peak_alloc_vram_mb": 1021.2,
+      "peak_reserved_vram_mb": 1266.0
+    },
+    {
+      "slot": "H7: Prosody Dynamics",
+      "model": "Deterministic DSP (pyin F0 + RMS)",
+      "status": "PASSED",
+      "load_time_s": 0.0,
+      "infer_time_s": 11.12,
+      "speed_x_realtime": 2.7,
+      "peak_alloc_vram_mb": 0.0,
+      "peak_reserved_vram_mb": 0.0
+    },
+    {
+      "slot": "M2: Face & Landmarks",
+      "model": "OpenCV YuNet ONNX",
+      "status": "PASSED",
+      "load_time_s": 0.02,
+      "infer_time_s": 5.63,
+      "speed_x_realtime": 5.3,
+      "peak_alloc_vram_mb": 0.0,
+      "peak_reserved_vram_mb": 0.0
+    },
+    {
+      "slot": "M2: Face Verification",
+      "model": "OpenCV SFace ONNX",
+      "status": "PASSED",
+      "load_time_s": 0.16,
+      "infer_time_s": 0.37,
+      "speed_x_realtime": 80.0,
+      "peak_alloc_vram_mb": 0.0,
+      "peak_reserved_vram_mb": 0.0
+    },
+    {
+      "slot": "M2: Person Detector",
+      "model": "RT-DETR-R18 (Apache 2.0)",
+      "status": "PASSED",
+      "load_time_s": 1.15,
+      "infer_time_s": 4.46,
+      "speed_x_realtime": 6.7,
+      "peak_alloc_vram_mb": 1142.6,
+      "peak_reserved_vram_mb": 2172.0
+    },
+    {
+      "slot": "M2: Scene Transitions",
+      "model": "TransNetV2 ONNX",
+      "status": "PASSED",
+      "load_time_s": 0.78,
+      "infer_time_s": 6.81,
+      "speed_x_realtime": 4.4,
+      "peak_alloc_vram_mb": 0.5,
+      "peak_reserved_vram_mb": 4.0
+    },
+    {
+      "slot": "M2: Subtitle / Screen OCR",
+      "model": "RapidOCR PP-OCRv4 ONNX",
+      "status": "PASSED",
+      "load_time_s": 0.42,
+      "infer_time_s": 100.42,
+      "speed_x_realtime": 0.3,
+      "peak_alloc_vram_mb": 0.5,
+      "peak_reserved_vram_mb": 4.0
+    }
+  ]
+}

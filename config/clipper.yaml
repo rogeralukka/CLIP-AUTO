@@ -1,6 +1,34 @@
 # config/clipper.yaml - Stream Clipper System Configuration
 # All tunable parameters are defined here with sane defaults.
 
+# Engine selection: legacy | script (Default stays legacy until user approval)
+engine: "legacy"
+
+# Swappable model slot architecture (Rule R2)
+hearing:
+  stem_splitter: "demucs"       # facebookresearch/demucs (htdemucs)
+  vad: "silero"                 # snakers4/silero-vad (v5)
+  audio_tagger: "panns"         # qiuqiangkong/audioset_tagging_cnn (CNN14)
+  music_mood: "clap"            # laion/clap-htsat-unfused
+  diarizer: "speechbrain"       # speechbrain/spkrec-ecapa-voxceleb (or pyannote with HF_TOKEN)
+  embedder: "ecapa"             # speechbrain/spkrec-ecapa-voxceleb
+  transcriber: "faster-whisper" # Systran/faster-whisper-large-v3-turbo
+  emotion: "emotion2vec"        # emotion2vec/emotion2vec_plus_base
+  prosody: "dsp"                # Deterministic F0 pitch & RMS loudness dynamics
+  llm_narrative: "qwen3:14b"    # Ollama qwen3:14b / qwen2.5:7b
+
+sight:
+  face_detector: "yunet"        # OpenCV YuNet (face_detection_yunet_2023mar.onnx)
+  face_recognizer: "sface"      # OpenCV SFace (face_recognition_sface_2021dec.onnx)
+  person_detector: "rtdetr"     # PekingU/rtdetr_r18vd (Apache 2.0 license-clean)
+  scene_detector: "transnetv2"  # TransNetV2 cut/boundary detector ONNX
+  ocr: "rapidocr"               # RapidOCR PP-OCRv4 ONNX
+  vlm: "qwen3:14b"              # Local VLM via Ollama / API Vision
+
+moments:
+  max_clip_length: 360.0        # Hard cap 6 minutes per clip
+  max_joined_pieces: 3          # Max 3 disjoint pieces for multi-part setup/payoff joining
+
 audio:
   whisper_model: "large-v3-turbo" # large-v3, large-v3-turbo, distil-large-v3
   vad_filter: true

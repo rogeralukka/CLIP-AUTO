@@ -195,6 +195,7 @@ def test_ollama_payload_turns_thinking_off_and_keeps_model_loaded(monkeypatch):
         seen["body"] = _json.loads(req.data.decode())
         return R()
     monkeypatch.setattr(judge.urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr("clipper.llm_cascade.call_llm_cascade", lambda *a, **k: None)
     assert judge.call_ollama_generate("hi", model="qwen3:14b") == "{}"
     b = seen["body"]
     assert b["think"] is False and b["format"] == "json" and b["keep_alive"] != 0

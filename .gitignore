@@ -74,4 +74,17 @@ clips/custom_uploads/
 data/learning/audio/
 data/learning/chat/
 data/learning/video/
+data/learning/*.mp4
+data/learning/*.wav
+
+# Model binaries
+models/*.onnx
+models/*.pth
+models/*.bin
+
+# Local chat exports
+CLIP_AUTO_Conversation_Transcript.pdf
+chat_transcript.html
+generate_chat_pdf.py
+
 
